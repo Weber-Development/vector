@@ -2,10 +2,7 @@
   "sections": [
     {
       "label": "Start",
-      "items": [
-        "introduction",
-        "getting-started"
-      ]
+      "items": ["introduction", "getting-started"]
     },
     {
       "label": "Guides",
@@ -22,18 +19,11 @@
     },
     {
       "label": "Pro",
-      "items": [
-        "pro/overview",
-        "pro/portal",
-        "pro/catalog",
-        "pro/ops"
-      ]
+      "items": ["pro/overview", "pro/portal", "pro/catalog", "pro/ops"]
     },
     {
       "label": "Reference",
-      "items": [
-        "reference/api"
-      ]
+      "items": ["reference/api"]
     }
   ]
 }
