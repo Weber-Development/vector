@@ -1,0 +1,25 @@
+{
+  "sections": [
+    {
+      "label": "Start",
+      "items": ["introduction", "getting-started"]
+    },
+    {
+      "label": "Guides",
+      "items": [
+        "guides/sending",
+        "guides/receiving",
+        "guides/retries",
+        "guides/security",
+        "guides/postgres",
+        "guides/workers",
+        "guides/cli",
+        "guides/migrating"
+      ]
+    },
+    {
+      "label": "Reference",
+      "items": ["reference/api"]
+    }
+  ]
+}

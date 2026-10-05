@@ -1,0 +1,96 @@
+{
+  "name": "@sweberdev/vector",
+  "version": "0.0.0",
+  "description": "Self-hosted webhooks for Node.js and TypeScript: Standard Webhooks signatures, retries with backoff, delivery log, SSRF protection and a Postgres store. A Svix alternative you run yourself.",
+  "license": "MIT",
+  "author": "Seya Weber (https://github.com/sxwxbxr)",
+  "homepage": "https://packages.sweber.dev/vector/docs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Weber-Development/vector.git",
+    "directory": "packages/core"
+  },
+  "bugs": {
+    "url": "https://github.com/Weber-Development/vector/issues"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./postgres": {
+      "import": {
+        "types": "./dist/postgres.d.ts",
+        "default": "./dist/postgres.js"
+      },
+      "require": {
+        "types": "./dist/postgres.d.cts",
+        "default": "./dist/postgres.cjs"
+      }
+    },
+    "./cli": {
+      "import": {
+        "types": "./dist/cli.d.ts",
+        "default": "./dist/cli.js"
+      },
+      "require": {
+        "types": "./dist/cli.d.cts",
+        "default": "./dist/cli.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "vector": "./dist/bin.js"
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "webhooks",
+    "webhook",
+    "standard-webhooks",
+    "svix",
+    "svix-alternative",
+    "hmac",
+    "signature",
+    "retries",
+    "self-hosted",
+    "postgres",
+    "ssrf"
+  ],
+  "engines": {
+    "node": ">=20.16"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.3.0",
+    "@types/node": "^22.20.5",
+    "standardwebhooks": "^1.0.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.0",
+    "vitest": "^5.0.3"
+  }
+}
