@@ -1,3 +1,10 @@
+export {
+  generateKeyPair,
+  type KeyPair,
+  PUBLIC_KEY_PREFIX,
+  publicKeyFor,
+  SECRET_KEY_PREFIX,
+} from "./asymmetric";
 export { endpointWants, matchesEventType } from "./event-types";
 export { MemoryStore } from "./memory-store";
 export {
@@ -42,10 +49,12 @@ export {
   type CreateEndpointInput,
   createVector,
   DEFAULT_RETRY_SCHEDULE,
+  type EndpointPublicKeys,
   type ProcessOptions,
   type ProcessResult,
   type SendInput,
   type SendResult,
+  type SigningScheme,
   type TenantScope,
   type UpdateEndpointInput,
   Vector,

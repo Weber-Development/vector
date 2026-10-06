@@ -1,3 +1,4 @@
+import { assertKey, generateKeyPair, isPublicKey, isSecretKey, publicKeyFor } from "./asymmetric";
 import { createId } from "./encoding";
 import { assertEventType, assertEventTypeFilter, endpointWants } from "./event-types";
 import { MemoryStore } from "./memory-store";
@@ -54,6 +55,11 @@ export interface VectorOptions {
   disableOnGone?: boolean;
   /** How long the previous secret keeps signing after a rotation, in seconds. Default 24 hours. */
   secretRotationGraceSeconds?: number;
+  /**
+   * Signature scheme for new endpoints: "hmac" (`v1`, a shared `whsec_` secret) or "ed25519"
+   * (`v1a`, a `whsk_` secret key; receivers verify with the public key). Default "hmac".
+   */
+  signing?: SigningScheme;
   /** Custom fetch, for tests or proxies. */
   fetch?: typeof fetch;
   /** Clock, for tests. */
@@ -76,9 +82,23 @@ export interface CreateEndpointInput {
   eventTypes?: string[] | null;
   headers?: Record<string, string>;
   metadata?: Record<string, string>;
-  /** Bring your own `whsec_...` secret, e.g. when migrating. Default: a new random one. */
+  /**
+   * Bring your own `whsec_` secret or `whsk_` Ed25519 secret key, e.g. when migrating.
+   * Default: a new random one of the `signing` scheme.
+   */
   secret?: string;
+  /** Signature scheme of a new secret. Default: the `signing` option. Ignored with `secret`. */
+  signing?: SigningScheme;
   enabled?: boolean;
+}
+
+export type SigningScheme = "hmac" | "ed25519";
+
+/** Public keys of an Ed25519 endpoint, for its receivers. */
+export interface EndpointPublicKeys {
+  publicKey: string;
+  /** The public key of the previous secret key while it still signs after a rotation. */
+  previousPublicKey: string | null;
 }
 
 export interface UpdateEndpointInput {
@@ -181,10 +201,23 @@ function validateEventTypes(eventTypes: string[] | null | undefined): string[] |
 }
 
 function validateSecret(secret: string): string {
+  if (isPublicKey(secret)) {
+    throw new TypeError("Pass the whsk_ secret key; the whpk_ public key cannot sign.");
+  }
+  if (isSecretKey(secret)) {
+    assertKey(secret);
+    return secret;
+  }
   const bytes = secretToBytes(secret);
   if (bytes.length < 24)
     throw new TypeError("Secrets must be at least 24 bytes (whsec_ + base64).");
   return secret;
+}
+
+async function newSecret(scheme: SigningScheme): Promise<string> {
+  if (scheme === "ed25519") return (await generateKeyPair()).secretKey;
+  if (scheme !== "hmac") throw new TypeError('signing must be "hmac" or "ed25519".');
+  return generateSecret();
 }
 
 async function readLimited(response: Response, max: number): Promise<string> {
@@ -253,6 +286,7 @@ export class Vector {
       disableOnGone: options.disableOnGone ?? true,
       secretRotationGraceSeconds: options.secretRotationGraceSeconds ?? 86_400,
       envelope: options.envelope ?? true,
+      signing: options.signing ?? "hmac",
       now: options.now ?? (() => new Date()),
       random: options.random ?? Math.random,
     };
@@ -303,7 +337,9 @@ export class Vector {
         tenant: input.tenant ?? null,
         url: input.url,
         description: input.description ?? null,
-        secret: input.secret ? validateSecret(input.secret) : generateSecret(),
+        secret: input.secret
+          ? validateSecret(input.secret)
+          : await newSecret(input.signing ?? this.options.signing),
         previousSecret: null,
         previousSecretExpiresAt: null,
         eventTypes: validateEventTypes(input.eventTypes),
@@ -355,8 +391,33 @@ export class Vector {
     },
 
     /**
+     * The public keys receivers verify with, for an endpoint that signs with Ed25519. `undefined`
+     * for unknown endpoints; `null` for endpoints with an HMAC secret.
+     */
+    publicKey: async (
+      id: string,
+      scope: TenantScope = {},
+    ): Promise<EndpointPublicKeys | null | undefined> => {
+      const endpoint = await this.endpoints.get(id, scope);
+      if (!endpoint) return undefined;
+      if (!isSecretKey(endpoint.secret)) return null;
+      const previousValid =
+        isSecretKey(endpoint.previousSecret) &&
+        endpoint.previousSecretExpiresAt !== null &&
+        endpoint.previousSecretExpiresAt > this.now();
+      return {
+        publicKey: await publicKeyFor(endpoint.secret),
+        previousPublicKey:
+          previousValid && endpoint.previousSecret
+            ? await publicKeyFor(endpoint.previousSecret)
+            : null,
+      };
+    },
+
+    /**
      * Replaces the signing secret. The old one keeps signing alongside the new one for
-     * `graceSeconds` (default from the options), so receivers can switch without downtime.
+     * `graceSeconds` (default from the options), so receivers can switch without downtime. The
+     * new secret has the same scheme as the old one unless you pass `secret`.
      */
     rotateSecret: async (
       id: string,
@@ -367,7 +428,9 @@ export class Vector {
       const now = this.now();
       const grace = options.graceSeconds ?? this.options.secretRotationGraceSeconds;
       return this.store.updateEndpoint(id, {
-        secret: options.secret ? validateSecret(options.secret) : generateSecret(),
+        secret: options.secret
+          ? validateSecret(options.secret)
+          : await newSecret(isSecretKey(endpoint.secret) ? "ed25519" : "hmac"),
         previousSecret: grace > 0 ? endpoint.secret : null,
         previousSecretExpiresAt: grace > 0 ? new Date(now.getTime() + grace * 1000) : null,
         updatedAt: now,
