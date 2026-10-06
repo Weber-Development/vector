@@ -5,6 +5,15 @@ export {
   publicKeyFor,
   SECRET_KEY_PREFIX,
 } from "./asymmetric";
+export {
+  type DedupeOptions,
+  type Deduper,
+  type MemoryDeduperOptions,
+  memoryDeduper,
+  type OnceResult,
+  once,
+  type SqlDeduper,
+} from "./dedupe";
 export { endpointWants, matchesEventType } from "./event-types";
 export { MemoryStore } from "./memory-store";
 export {

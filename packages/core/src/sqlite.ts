@@ -1,3 +1,4 @@
+import { type DedupeDriver, type SqlDeduper, type SqlDeduperOptions, sqlDeduper } from "./dedupe";
 import { checkPrefix, type SqlDialect, type SqlExecutor, SqlStore } from "./sql";
 
 /**
@@ -140,4 +141,34 @@ export class SqliteStore extends SqlStore {
 /** Creates a SQLite store. Call `await store.migrate()` once, or run `sqliteSchema()` yourself. */
 export function createSqliteStore(options: SqliteStoreOptions): SqliteStore {
   return new SqliteStore(options);
+}
+
+/**
+ * Remembers handled webhook ids in a SQLite table. Call `await deduper.migrate()` once, and
+ * `deduper.prune()` now and then to drop old ids.
+ */
+export function sqliteDeduper(
+  options: { database: SqliteDatabase } & SqlDeduperOptions,
+): SqlDeduper {
+  const { database } = options;
+  const run = (sql: string, params: unknown[]) =>
+    Number(database.prepare(sql).run(...(params as never[])).changes);
+  const driver: DedupeDriver = {
+    run: async (sql) => void run(sql, []),
+    deleteExpired: async (table, id, nowMs) =>
+      void run(`delete from ${table} where id = ? and expires_at <= ?`, [id, nowMs]),
+    insert: async (table, id, expiresMs) =>
+      run(`insert or ignore into ${table} (id, expires_at) values (?, ?)`, [id, expiresMs]) === 1,
+    remove: async (table, id) => void run(`delete from ${table} where id = ?`, [id]),
+    deleteAllExpired: async (table, nowMs) =>
+      run(`delete from ${table} where expires_at <= ?`, [nowMs]),
+  };
+  return sqlDeduper(
+    driver,
+    (table) => [
+      `create table if not exists ${table} (id text primary key, expires_at integer not null)`,
+      `create index if not exists ${table}_expires on ${table} (expires_at)`,
+    ],
+    options,
+  );
 }

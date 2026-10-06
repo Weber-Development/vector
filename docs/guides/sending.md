@@ -49,6 +49,23 @@ The payload must be JSON. It becomes `data` in the body `{ type, timestamp, data
 
 **Only some endpoints.** `endpointIds` limits a send to those endpoints; they still have to match the tenant and the event type.
 
+## Sending many events
+
+After an import or a nightly job, use `sendMany` instead of a loop:
+
+```ts
+const results = await vector.sendMany(
+  invoices.map((invoice) => ({
+    eventType: "invoice.created",
+    payload: invoice,
+    tenant: invoice.accountId,
+    idempotencyKey: `invoice-created-${invoice.id}`,
+  })),
+)
+```
+
+It takes up to 1000 events per call, checks all of them before storing anything, reads the endpoints of each tenant once and returns the results in the order of the inputs. Repeats of an idempotency key inside the batch are recognised as duplicates. It is not one transaction: if the database fails midway, the first events are already stored, so give every event an `idempotencyKey` and repeat the call.
+
 ## Changing the body per endpoint
 
 Not every receiver wants the `{ type, timestamp, data }` envelope. A Slack channel wants blocks, a partner wants only three fields. The `transform` option of `createVector` runs before every attempt and can replace the body, add headers or skip the delivery:
