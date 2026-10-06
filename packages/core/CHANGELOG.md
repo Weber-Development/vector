@@ -1,5 +1,11 @@
 # @sweberdev/vector
 
+## 0.5.0
+
+### Minor Changes
+
+- b6b048b: New `hold` option: asked before every attempt how many seconds deliveries to an endpoint should wait. Held deliveries stay pending and are not counted as attempts. It is the building block for circuit breakers and pauses.
+
 ## 0.4.0
 
 ### Minor Changes
