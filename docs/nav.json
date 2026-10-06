@@ -15,6 +15,7 @@
         "guides/postgres",
         "guides/sqlite-mysql",
         "guides/workers",
+        "guides/operations",
         "guides/cli",
         "guides/migrating"
       ]
@@ -33,7 +34,7 @@
     },
     {
       "label": "Reference",
-      "items": ["reference/api"]
+      "items": ["reference/api", "reference/stability"]
     }
   ]
 }
