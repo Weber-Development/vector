@@ -65,6 +65,19 @@ await vector.endpoints.create({ url, metadata: { rateLimit: "2" } })
 
 The limit is kept in memory. With several worker processes, each one applies it on its own, so the total can be up to the number of processes times the limit.
 
+## Pausing an endpoint
+
+`hold` is asked before every attempt how many seconds deliveries to an endpoint should wait. Return `undefined` to deliver now. Held deliveries stay pending and are not counted as attempts, like deliveries over the rate limit.
+
+```ts
+createVector({
+  store,
+  hold: (endpoint) => (endpoint.metadata.paused === "true" ? 300 : undefined),
+})
+```
+
+Vector Pro's `vector-ops` uses it for a circuit breaker that stops sending to an endpoint that is down.
+
 ## Retry and resend
 
 ```ts

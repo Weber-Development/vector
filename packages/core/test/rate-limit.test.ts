@@ -86,3 +86,36 @@ describe("dispatcher", () => {
     expect(seen).toEqual([dispatcher]);
   });
 });
+
+describe("hold", () => {
+  it("keeps deliveries pending without attempts while held, then delivers", async () => {
+    const network = fakeNetwork();
+    let seconds: number | undefined = 30;
+    const { vector, time } = testVector({ network, hold: () => seconds });
+    await vector.endpoints.create({ url: URL_A });
+    await sendMany(vector, 2);
+    expect((await vector.process()).retrying).toBe(2);
+    expect(network.received).toHaveLength(0);
+    time.advance(10);
+    expect((await vector.process()).claimed).toBe(0); // not due yet
+    time.advance(21);
+    seconds = undefined;
+    expect((await vector.process()).succeeded).toBe(2);
+    const deliveries = await vector.store.listDeliveries({});
+    expect(deliveries.every((d) => d.attempts === 1)).toBe(true);
+  });
+
+  it("goes ahead when the hook throws", async () => {
+    const network = fakeNetwork();
+    const { vector } = testVector({
+      network,
+      hold: () => {
+        throw new Error("broken");
+      },
+      onError: () => {},
+    });
+    await vector.endpoints.create({ url: URL_A });
+    await vector.send({ eventType: "a.b", payload: {}, deliverNow: true });
+    expect(network.received).toHaveLength(1);
+  });
+});
