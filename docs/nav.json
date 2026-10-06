@@ -21,7 +21,7 @@
     },
     {
       "label": "Pro",
-      "items": ["pro/overview", "pro/portal", "pro/catalog", "pro/ops", "pro/inbound"]
+      "items": ["pro/overview", "pro/portal", "pro/catalog", "pro/ops", "pro/inbound", "pro/transform"]
     },
     {
       "label": "Reference",
