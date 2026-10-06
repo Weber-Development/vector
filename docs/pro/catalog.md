@@ -51,7 +51,7 @@ The payload is typed from the schema (its input type) and validated before `vect
 createPortalHandler(vector, { authorize, eventTypes: catalog.eventTypes() });
 ```
 
-`eventTypes()` returns `{ type, description, deprecated }` for each event; pass `{ includeDeprecated: false }` to hide deprecated ones.
+`eventTypes()` returns `type`, `description`, `deprecated`, `deprecationNote`, `since`, `example` and `schema` (the `jsonSchema`) for each event, which the portal shows in its "Event catalog" tab; pass `{ includeDeprecated: false }` to hide deprecated ones.
 
 ## Docs and types
 
