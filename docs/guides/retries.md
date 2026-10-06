@@ -44,6 +44,27 @@ When `failureStreak` reaches `disableEndpointAfter` (default 10), Vector disable
 
 Tell your customers when this happens; that is what the events are for. [Vector Pro](../pro/overview.md) includes ready-made alerts for Slack, email and webhooks.
 
+## Limiting the rate
+
+A burst of events can overload a customer's server, and a server that answers `429` or times out counts as a failed attempt. To keep the pace gentle, set a limit in requests per second:
+
+```ts
+const vector = createVector({
+  store,
+  rateLimit: 5, // every endpoint
+})
+
+// or per endpoint
+createVector({ store, rateLimit: (endpoint) => (endpoint.metadata.plan === "free" ? 1 : undefined) })
+
+// or on the endpoint itself
+await vector.endpoints.create({ url, metadata: { rateLimit: "2" } })
+```
+
+`metadata.rateLimit` wins over the option. A limit of 2 allows a burst of two requests and then one every half second. A delivery over the limit is put back for the moment its turn comes: it is not counted as an attempt, does not use up the retry schedule and does not count towards disabling the endpoint. Test events and manual retries ignore the limit.
+
+The limit is kept in memory. With several worker processes, each one applies it on its own, so the total can be up to the number of processes times the limit.
+
 ## Retry and resend
 
 ```ts

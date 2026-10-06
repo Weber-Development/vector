@@ -46,3 +46,18 @@ createVector({
 `assertDeliverableUrl(url, policy)` and `isPrivateAddress(ip)` are exported if you want the same check elsewhere, for example to validate a form before saving.
 
 **Limits.** Between the check and the request, a host name could in theory resolve differently (DNS rebinding with a very short TTL). For untrusted endpoints at scale, also send webhooks through an egress proxy that blocks private networks, or from a network segment without access to internal services. On runtimes without DNS access (edge), only IP literals and host names are checked.
+
+## Egress proxy and fixed IP
+
+Customers that allow-list your IP address need deliveries to leave from a fixed address. Run an egress proxy with a static IP and send Vector's requests through it with an [undici](https://undici.nodejs.org) dispatcher:
+
+```ts
+import { ProxyAgent } from "undici"
+
+const vector = createVector({
+  store,
+  dispatcher: new ProxyAgent(process.env.EGRESS_PROXY_URL!),
+})
+```
+
+Vector still resolves and checks the endpoint's host name itself before every request, so the SSRF protection keeps working; the proxy should additionally refuse private networks. Node.js 24 and later can also take the proxy from the environment: start the process with `NODE_USE_ENV_PROXY=1` and `HTTPS_PROXY` set, and no code is needed.
