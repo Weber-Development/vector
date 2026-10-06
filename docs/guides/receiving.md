@@ -70,6 +70,36 @@ This mirrors the `standardwebhooks` and `svix` packages, except that `verify` re
 
 Vector follows the [Standard Webhooks](https://www.standardwebhooks.com) specification, so receivers can use its official libraries (Python, Go, PHP, Ruby, Java, Rust, C#, Elixir) or the Svix SDKs. Vector also accepts `svix-id`, `svix-timestamp` and `svix-signature` headers when verifying.
 
+## Skipping repeats
+
+Webhooks are delivered at least once: if your answer is slow or lost, the same `webhook-id` arrives again. A `Deduper` remembers the ids you have handled:
+
+```ts
+import { memoryDeduper, once, verifyRequest } from "@sweberdev/vector"
+
+const deduper = memoryDeduper() // one process; ids are lost on restart
+
+export async function POST(request: Request) {
+  const { id, payload } = await verifyRequest(request, process.env.WEBHOOK_SECRET!)
+  await once(deduper, id, () => handle(payload))
+  return new Response(null, { status: 204 }) // the same answer for repeats
+}
+```
+
+`once` runs the work only the first time. If the work throws, the id is forgotten again, so the retry of the webhook is handled, and the error is rethrown.
+
+With several processes or restarts, keep the ids in your database instead. The same call exists for each supported database; run `await deduper.migrate()` once and `deduper.prune()` now and then (for example daily) to delete old ids:
+
+```ts
+import { postgresDeduper } from "@sweberdev/vector/postgres"
+import { sqliteDeduper } from "@sweberdev/vector/sqlite"
+import { mysqlDeduper } from "@sweberdev/vector/mysql"
+
+const deduper = postgresDeduper({ query: (text, params) => pool.query(text, params) })
+```
+
+Ids are remembered for seven days (`ttlSeconds`), longer than the retry schedule. The table is called `vector_seen` (`tablePrefix` changes the prefix).
+
 ## Errors
 
 `WebhookVerificationError` has a `code`:

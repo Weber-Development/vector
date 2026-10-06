@@ -1,3 +1,4 @@
+import { type DedupeDriver, type SqlDeduper, type SqlDeduperOptions, sqlDeduper } from "./dedupe";
 import type {
   Attempt,
   AttemptQuery,
@@ -423,4 +424,36 @@ export class PostgresStore implements VectorStore {
 /** Creates a PostgreSQL store. Call `await store.migrate()` once, or run `postgresSchema()` yourself. */
 export function createPostgresStore(options: PostgresStoreOptions): PostgresStore {
   return new PostgresStore(options);
+}
+
+/**
+ * Remembers handled webhook ids in a table, for receivers with several processes or restarts. Call
+ * `await deduper.migrate()` once, and `deduper.prune()` now and then (e.g. daily) to drop old ids.
+ */
+export function postgresDeduper(options: { query: PostgresQuery } & SqlDeduperOptions): SqlDeduper {
+  const { query } = options;
+  const driver: DedupeDriver = {
+    run: async (sql) => void (await query(sql, [])),
+    deleteExpired: async (table, id, nowMs) =>
+      void (await query(`delete from ${table} where id = $1 and expires_at <= $2`, [id, nowMs])),
+    insert: async (table, id, expiresMs) =>
+      (
+        await query(
+          `insert into ${table} (id, expires_at) values ($1, $2) on conflict (id) do nothing returning id`,
+          [id, expiresMs],
+        )
+      ).rows.length === 1,
+    remove: async (table, id) => void (await query(`delete from ${table} where id = $1`, [id])),
+    deleteAllExpired: async (table, nowMs) =>
+      (await query(`delete from ${table} where expires_at <= $1 returning id`, [nowMs])).rows
+        .length,
+  };
+  return sqlDeduper(
+    driver,
+    (table) => [
+      `create table if not exists ${table} (id text primary key, expires_at bigint not null)`,
+      `create index if not exists ${table}_expires on ${table} (expires_at)`,
+    ],
+    options,
+  );
 }

@@ -385,3 +385,44 @@ describe("rotation, recovery and workers", () => {
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: "listener broke" }));
   });
 });
+
+describe("sendMany", () => {
+  it("sends a batch with one endpoint lookup per tenant and keeps the order", async () => {
+    const network = fakeNetwork();
+    const { vector } = testVector({ network });
+    await vector.endpoints.create({ url: "https://a.example.com/hook", tenant: "acme" });
+    await vector.endpoints.create({ url: "https://b.example.com/hook", tenant: "other" });
+    const calls: unknown[] = [];
+    const original = vector.store.endpointsForTenant.bind(vector.store);
+    vector.store.endpointsForTenant = (tenant) => {
+      calls.push(tenant);
+      return original(tenant);
+    };
+    const results = await vector.sendMany([
+      { eventType: "a.b", payload: { n: 1 }, tenant: "acme" },
+      { eventType: "a.b", payload: { n: 2 }, tenant: "other" },
+      { eventType: "a.b", payload: { n: 3 }, tenant: "acme", idempotencyKey: "k" },
+      { eventType: "a.b", payload: { n: 4 }, tenant: "acme", idempotencyKey: "k" },
+    ]);
+    expect(results.map((r) => (r.message.payload as { n: number }).n)).toEqual([1, 2, 3, 3]);
+    expect(results.map((r) => r.deliveries.length)).toEqual([1, 1, 1, 1]);
+    expect(results[3]?.duplicate).toBe(true);
+    expect(calls.length).toBeLessThanOrEqual(2);
+    expect((await vector.process()).succeeded).toBe(3);
+  });
+
+  it("stores nothing when one input is invalid", async () => {
+    const { vector } = testVector({});
+    await vector.endpoints.create({ url: "https://a.example.com/hook" });
+    await expect(
+      vector.sendMany([
+        { eventType: "a.b", payload: {} },
+        { eventType: "not valid!", payload: {} },
+      ]),
+    ).rejects.toThrow();
+    expect(await vector.store.listMessages({})).toHaveLength(0);
+    await expect(
+      vector.sendMany(Array.from({ length: 1001 }, () => ({ eventType: "a.b", payload: {} }))),
+    ).rejects.toThrow(RangeError);
+  });
+});

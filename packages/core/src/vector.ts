@@ -515,13 +515,72 @@ export class Vector {
    * happens in `process()` or the worker from `start()`, or right away with `deliverNow`.
    */
   async send(input: SendInput): Promise<SendResult> {
-    assertEventType(input.eventType);
-    const tenant = input.tenant ?? null;
-    const json = JSON.stringify(input.payload);
+    return this.sendOne(input);
+  }
+
+  /**
+   * Sends many events at once, e.g. after an import: up to 1000 per call. Every input is checked
+   * first and nothing is stored if one is invalid. The endpoints of a tenant are read once for the
+   * whole batch, so it needs far fewer queries than calling `send` in a loop. Results come back
+   * in the order of the inputs. Not atomic: if the store fails midway, the first events are
+   * already stored; repeat the call with `idempotencyKey`s to be safe.
+   */
+  async sendMany(
+    inputs: SendInput[],
+    options: { concurrency?: number } = {},
+  ): Promise<SendResult[]> {
+    if (inputs.length > 1000) throw new RangeError("sendMany takes at most 1000 events per call.");
+    for (const input of inputs) {
+      assertEventType(input.eventType);
+      this.checkPayload(input.payload);
+    }
+    const cache = new Map<string | null, Promise<Endpoint[]>>();
+    const results: SendResult[] = new Array(inputs.length);
+    // Repeats of an idempotency key inside the batch wait until the first one is stored.
+    const seen = new Set<string>();
+    const first: number[] = [];
+    const repeats: number[] = [];
+    inputs.forEach((input, i) => {
+      const key = input.idempotencyKey
+        ? JSON.stringify([input.tenant ?? null, input.idempotencyKey])
+        : null;
+      if (key && seen.has(key)) repeats.push(i);
+      else {
+        if (key) seen.add(key);
+        first.push(i);
+      }
+    });
+    let next = 0;
+    const workers = Array.from(
+      { length: Math.min(Math.max(1, options.concurrency ?? 5), first.length) },
+      async () => {
+        for (let n = next++; n < first.length; n = next++) {
+          const i = first[n] as number;
+          results[i] = await this.sendOne(inputs[i] as SendInput, cache);
+        }
+      },
+    );
+    await Promise.all(workers);
+    for (const i of repeats) results[i] = await this.sendOne(inputs[i] as SendInput, cache);
+    return results;
+  }
+
+  private checkPayload(payload: unknown): string {
+    const json = JSON.stringify(payload);
     if (json === undefined) throw new TypeError("The payload must be JSON-serialisable.");
     if (new TextEncoder().encode(json).length > this.options.maxPayloadBytes) {
       throw new RangeError(`The payload is larger than ${this.options.maxPayloadBytes} bytes.`);
     }
+    return json;
+  }
+
+  private async sendOne(
+    input: SendInput,
+    cache?: Map<string | null, Promise<Endpoint[]>>,
+  ): Promise<SendResult> {
+    assertEventType(input.eventType);
+    const tenant = input.tenant ?? null;
+    const json = this.checkPayload(input.payload);
     if (input.idempotencyKey) {
       const existing = await this.store.findMessageByIdempotencyKey(tenant, input.idempotencyKey);
       if (existing) {
@@ -539,7 +598,12 @@ export class Vector {
       createdAt: now,
     };
     const only = input.endpointIds ? new Set(input.endpointIds) : undefined;
-    const endpoints = (await this.store.endpointsForTenant(tenant)).filter(
+    let lookup = cache?.get(tenant);
+    if (!lookup) {
+      lookup = this.store.endpointsForTenant(tenant);
+      cache?.set(tenant, lookup);
+    }
+    const endpoints = (await lookup).filter(
       (endpoint) =>
         endpoint.enabled &&
         endpointWants(endpoint.eventTypes, message.eventType) &&

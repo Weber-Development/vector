@@ -1,3 +1,4 @@
+import { type DedupeDriver, type SqlDeduper, type SqlDeduperOptions, sqlDeduper } from "./dedupe";
 import { checkPrefix, type SqlDialect, SqlStore } from "./sql";
 
 /**
@@ -143,4 +144,30 @@ export class MysqlStore extends SqlStore {
 /** Creates a MySQL store. Call `await store.migrate()` once, or run `mysqlSchema()` yourself. */
 export function createMysqlStore(options: MysqlStoreOptions): MysqlStore {
   return new MysqlStore(options);
+}
+
+/**
+ * Remembers handled webhook ids in a MySQL table. Call `await deduper.migrate()` once, and
+ * `deduper.prune()` now and then to drop old ids.
+ */
+export function mysqlDeduper(options: { query: MysqlQuery } & SqlDeduperOptions): SqlDeduper {
+  const { query } = options;
+  const driver: DedupeDriver = {
+    run: async (sql) => void (await query(sql, [])),
+    deleteExpired: async (table, id, nowMs) =>
+      void (await query(`delete from ${table} where id = ? and expires_at <= ?`, [id, nowMs])),
+    insert: async (table, id, expiresMs) =>
+      (await query(`insert ignore into ${table} (id, expires_at) values (?, ?)`, [id, expiresMs]))
+        .affectedRows === 1,
+    remove: async (table, id) => void (await query(`delete from ${table} where id = ?`, [id])),
+    deleteAllExpired: async (table, nowMs) =>
+      (await query(`delete from ${table} where expires_at <= ?`, [nowMs])).affectedRows,
+  };
+  return sqlDeduper(
+    driver,
+    (table) => [
+      `create table if not exists ${table} (id varchar(255) primary key, expires_at bigint not null, key ${table}_expires (expires_at))`,
+    ],
+    options,
+  );
 }

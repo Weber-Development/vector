@@ -49,6 +49,7 @@ Returns a `Vector`. Options, all optional:
 | Method | Returns |
 |---|---|
 | `send({ eventType, payload, tenant?, idempotencyKey?, endpointIds?, deliverNow? })` | `{ message, deliveries, duplicate }` |
+| `sendMany(inputs, { concurrency? })` | `SendResult[]`: up to 1000 events, validated first, in the order of the inputs |
 | `sendTest(endpointId, { tenant?, payload? })` | `Delivery \| undefined` after one attempt |
 | `process({ limit?, concurrency? })` | `{ claimed, succeeded, retrying, failed, cancelled }` |
 | `start({ intervalMs?, limit?, concurrency? })` | `{ stop(): Promise<void> }` |
