@@ -64,9 +64,15 @@ Because these are ordinary Vector messages, the delivery log, `vector.retry`, `v
 | `github({ secret })` | `X-Hub-Signature-256` | `X-GitHub-Event` plus `action`, e.g. `pull_request.opened` | `X-GitHub-Delivery` |
 | `shopify({ secret })` | `X-Shopify-Hmac-Sha256` | `X-Shopify-Topic`, `orders/create` becomes `orders.create` | `X-Shopify-Event-Id` |
 | `standardWebhooks({ secret, toleranceSeconds? })` | `webhook-*` or `svix-*` headers, `whsec_` secrets and `whpk_` public keys | payload `type`; a `{ type, data }` envelope is unwrapped | `webhook-id` |
+| `polar({ secret, toleranceSeconds? })` | Standard Webhooks; `whsec_` secrets as they are, older Polar secrets are base64-encoded for you | payload `type`, e.g. `order.paid`; the envelope is unwrapped | `webhook-id` |
+| `gitlab({ secret })` | `X-Gitlab-Token` | `object_kind` plus `object_attributes.action`, e.g. `merge_request.open` | `X-Gitlab-Event-UUID`, else the body's SHA-256 |
+| `paddle({ secret, toleranceSeconds? })` | `Paddle-Signature` (`ts` and `h1`, 300 s tolerance) | `event_type`, e.g. `transaction.completed` | `event_id` |
+| `linear({ secret, toleranceSeconds? })` | `Linear-Signature`, `webhookTimestamp` within 60 s | entity and `action`, e.g. `issue.create` | `Linear-Delivery` |
+| `sentry({ secret })` | `Sentry-Hook-Signature` | `Sentry-Hook-Resource` plus `action`, e.g. `issue.created` | `Request-ID` |
+| `lemonSqueezy({ secret })` | `X-Signature` | `meta.event_name`, e.g. `order_created` | the body's SHA-256 (no id is sent) |
 | `hmacSource({ secret, header, algorithm?, encoding?, prefix?, idHeader?, eventType, timestampHeader? })` | HMAC over the body (or `{timestamp}.{body}`), SHA-1/256/512, hex or base64 | a header or a function of the payload | `idHeader`, else the body's SHA-256 |
 
-`secret` takes a list during a rotation; a request signed with any of them is accepted. GitHub webhooks must use the content type `application/json`. A source is any object with `provider` and `verify({ body, headers, now })`, so you can add your own.
+`secret` takes a list during a rotation; a request signed with any of them is accepted. GitHub webhooks must use the content type `application/json`. Slack's Events API and Twilio are not covered yet: Slack needs an answer to its URL verification challenge, and Twilio signs the full URL and form fields; use `hmacSource` or your own source for services with a plain HMAC. A source is any object with `provider` and `verify({ body, headers, now })`, so you can add your own.
 
 ## Answers
 
