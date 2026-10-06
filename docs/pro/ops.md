@@ -1,9 +1,9 @@
 ---
 title: Operations
-description: "vector-ops: alerts, bulk recovery, health reports, Prometheus metrics and data retention."
+description: "vector-ops: alerts, circuit breaker, weekly tenant reports, bulk recovery, health reports, metrics and data retention."
 ---
 
-Part of Vector Pro. Operations for [`@sweberdev/vector`](https://packages.sweber.dev/vector) in production: alerts when deliveries fail, bulk recovery after an outage, health reports, Prometheus metrics and data retention for the Postgres store.
+Part of Vector Pro. Operations for [`@sweberdev/vector`](https://packages.sweber.dev/vector) in production: alerts when deliveries fail, a circuit breaker for endpoints that are down, weekly reports per tenant, bulk recovery after an outage, health reports, Prometheus metrics and data retention for the Postgres store.
 
 ## Alerts
 
@@ -54,7 +54,7 @@ import { createMetricsCollector, healthReport, prometheusMetrics } from "@weber-
 const report = await healthReport(vector, { since: new Date(Date.now() - 86_400_000) });
 // report.endpoints[i]: attempts, successRate, p50Ms, p95Ms, lastSuccessAt, lastError,
 // failureStreak, status ("healthy" | "degraded" | "failing" | "disabled" | "idle")
-// report.totals: attempts, successRate, p50Ms, p95Ms, pendingDeliveries, byStatus
+// report.totals: attempts, successRate, p50Ms, p95Ms, pendingDeliveries, byStatus, topErrors
 ```
 
 For Prometheus, either read a window from the store on each scrape:
@@ -66,6 +66,48 @@ app.get("/metrics", async (_req, res) => {
 ```
 
 or count live in the worker process with `createMetricsCollector(vector)` and serve `collector.metrics()`: counters `vector_attempts_total`, `vector_deliveries_completed_total`, `vector_endpoints_disabled_total` and the histogram `vector_attempt_duration_seconds`. Both use the labels `endpoint` (id) and `tenant`.
+
+## Circuit breaker
+
+An endpoint that is down should not eat the retry schedule of every message you send it. The circuit breaker holds deliveries while an endpoint keeps failing and probes it now and then:
+
+```ts
+import { createCircuitBreaker } from "@weber-development/vector-ops";
+
+const breaker = createCircuitBreaker({
+  failureThreshold: 5,      // failed attempts in a row that open the circuit
+  cooldownSeconds: 60,      // hold time; doubles after each failed probe, up to maxCooldownSeconds (900)
+  onChange: (change) => console.log(change.to, change.url, change.cooldownSeconds),
+});
+const vector = createVector({ store, hold: breaker.hold }); // needs @sweberdev/vector 0.5 or later
+breaker.attach(vector);                                      // where the worker runs
+```
+
+After `failureThreshold` failed attempts in a row the circuit opens and everything for that endpoint waits for the cooldown. Then one delivery goes out as a probe: if the server answers, the circuit closes and the backlog is delivered; if not, the circuit opens again with twice the cooldown. Held deliveries stay pending and are not counted as attempts, so they do not use up the retry schedule and do not count towards disabling the endpoint.
+
+Only failures that say the server is unavailable count: no answer, timeouts, `408`, `429` and `5xx`. A `400` or `404` means the server is up and refused one message; change that with `isFailure`. `onChange` fires on `open`, `half-open` and `closed`, so you can send a message to your team or the customer. `breaker.state(endpointId)` tells the current state and `breaker.reset(endpointId)` closes a circuit by hand.
+
+State lives in memory of the process that delivers. With several workers each one learns on its own, and with high concurrency a few more attempts than the threshold can go out before the circuit opens.
+
+## Weekly reports per tenant
+
+Customers who use your webhooks like to hear that they work, and like to hear early when they do not. `sendTenantReports` builds a report for every tenant and hands you the finished email:
+
+```ts
+import { sendTenantReports } from "@weber-development/vector-ops";
+
+await sendTenantReports(vector, {
+  since: new Date(Date.now() - 7 * 86_400_000),
+  send: async ({ tenant, subject, text, html }) => {
+    await transporter.sendMail({ to: await emailOf(tenant), from: "reports@example.com", subject, text, html });
+  },
+  render: (tenant) => ({ title: tenant, dashboardUrl: `https://app.example.com/${tenant}/webhooks` }),
+});
+```
+
+Run it from a weekly cron job. Each report shows deliveries attempted, success rate, failed attempts and response times, each compared with the period before, the endpoints that need attention with their last error, and the most frequent errors. Tenants without any attempt in the period are skipped (`includeIdle: true` sends to them too). One tenant failing does not stop the others; `onError` tells which.
+
+For one tenant, `tenantReport(vector, tenant, { since })` returns the numbers and `renderReport(report, options)` the subject, plain text and HTML. The email is yours to send, so wording, language and recipients stay under your control.
 
 ## Retention (Postgres)
 
