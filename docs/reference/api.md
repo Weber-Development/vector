@@ -26,6 +26,7 @@ Returns a `Vector`. Options, all optional:
 | `transform` | none | `({ message, endpoint, body }) => { body?, headers?, skip? } \| undefined`: changes one delivery; see [Sending](../guides/sending.md) |
 | `rateLimit` | none | Requests per second per endpoint: a number, or `(endpoint) => number \| undefined`; `metadata.rateLimit` overrides. See [Retries](../guides/retries.md) |
 | `dispatcher` | none | An undici dispatcher (e.g. `ProxyAgent`) for egress through a proxy. See [Security](../guides/security.md) |
+| `hold` | none | `(endpoint) => seconds \| undefined`: how long deliveries to an endpoint wait before the next attempt; held deliveries are not counted as attempts |
 | `fetch`, `now`, `random` | globals | For tests |
 | `onError` | `console.error` | Errors from listeners and the worker |
 

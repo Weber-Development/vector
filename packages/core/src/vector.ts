@@ -75,6 +75,13 @@ export interface VectorOptions {
    * is kept in memory, so with several worker processes each one applies it on its own.
    */
   rateLimit?: number | ((endpoint: Endpoint) => number | undefined);
+  /**
+   * Asked before every attempt: how many seconds deliveries to this endpoint should wait, or
+   * `undefined` to deliver now. Held deliveries stay pending and are not counted as attempts.
+   * Use it for a circuit breaker, a maintenance window or a customer's own pause. Keep it fast;
+   * it runs for every attempt. If it throws, the attempt goes ahead.
+   */
+  hold?: (endpoint: Endpoint) => number | undefined | Promise<number | undefined>;
   /** Clock, for tests. */
   now?: () => Date;
   /** Random number in [0, 1) for retry jitter, for tests. */
@@ -310,12 +317,20 @@ export class Vector {
   private readonly options: Required<
     Omit<
       VectorOptions,
-      "store" | "urlPolicy" | "fetch" | "onError" | "transform" | "dispatcher" | "rateLimit"
+      | "store"
+      | "urlPolicy"
+      | "fetch"
+      | "onError"
+      | "transform"
+      | "dispatcher"
+      | "rateLimit"
+      | "hold"
     >
   > & { urlPolicy: UrlPolicy };
   private readonly transform: TransformFunction | undefined;
   private readonly dispatcher: unknown;
   private readonly rateLimit: VectorOptions["rateLimit"];
+  private readonly hold: VectorOptions["hold"];
   private readonly rateState = new Map<string, number>();
   private readonly fetchImpl: typeof fetch;
   private readonly onError: (error: unknown) => void;
@@ -344,6 +359,7 @@ export class Vector {
     this.transform = options.transform;
     this.dispatcher = options.dispatcher;
     this.rateLimit = options.rateLimit;
+    this.hold = options.hold;
     if (typeof options.rateLimit === "number" && !(options.rateLimit > 0)) {
       throw new RangeError("rateLimit must be a positive number of requests per second.");
     }
@@ -693,19 +709,26 @@ export class Vector {
       return "cancelled";
     }
 
-    const limit = ignoreDisabled ? undefined : this.limitFor(endpoint);
-    if (limit) {
-      const waitMs = this.reserve(endpoint.id, limit);
-      if (waitMs > 0) {
-        const now = this.now();
-        await this.store.updateDelivery(delivery.id, {
-          status: "pending",
-          nextAttemptAt: new Date(now.getTime() + waitMs),
-          lockedUntil: null,
-          updatedAt: now,
-        });
-        return "retrying";
+    let waitMs = 0;
+    if (!ignoreDisabled && this.hold) {
+      try {
+        const seconds = await this.hold(endpoint);
+        if (seconds !== undefined && seconds > 0) waitMs = Math.ceil(seconds * 1000);
+      } catch (error) {
+        this.onError(error);
       }
+    }
+    const limit = waitMs > 0 || ignoreDisabled ? undefined : this.limitFor(endpoint);
+    if (limit) waitMs = this.reserve(endpoint.id, limit);
+    if (waitMs > 0) {
+      const now = this.now();
+      await this.store.updateDelivery(delivery.id, {
+        status: "pending",
+        nextAttemptAt: new Date(now.getTime() + waitMs),
+        lockedUntil: null,
+        updatedAt: now,
+      });
+      return "retrying";
     }
 
     const at = this.now();
