@@ -9,9 +9,11 @@
       "items": [
         "guides/sending",
         "guides/receiving",
+        "guides/public-keys",
         "guides/retries",
         "guides/security",
         "guides/postgres",
+        "guides/sqlite-mysql",
         "guides/workers",
         "guides/cli",
         "guides/migrating"

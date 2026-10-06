@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { parseArgs } from "node:util";
+import { generateKeyPair } from "./asymmetric";
 import { createId } from "./encoding";
 import { generateSecret, signHeaders, verify, WebhookVerificationError } from "./signature";
 import { assertDeliverableUrl } from "./url-guard";
@@ -18,6 +19,7 @@ const HELP = `vector – self-hosted webhooks
 
 Usage:
   vector secret                       Print a new signing secret (whsec_...)
+  vector keypair                      Print a new Ed25519 key pair (whsk_... and whpk_...)
   vector sign --secret <s> [--id <id>] [--timestamp <unix>] [--file <path>]
                                       Print the webhook-* headers for a body (stdin or --file)
   vector verify --secret <s> --id <id> --timestamp <unix> --signature <sig> [--file <path>]
@@ -26,6 +28,9 @@ Usage:
                                       Send one signed test event to a URL
   vector listen [--port 4000] [--secret <s>]
                                       Receive webhooks locally and print them, verified if a secret is given
+
+--secret takes a whsec_ secret (v1 HMAC signatures) or an Ed25519 key: sign and send with
+the whsk_ secret key (v1a signatures), verify and listen with the whpk_ public key.
 
 Options:
   -h, --help                          Show this help
@@ -46,6 +51,13 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
     switch (command) {
       case "secret": {
         io.stdout(`${generateSecret()}\n`);
+        return 0;
+      }
+      case "keypair": {
+        const pair = await generateKeyPair();
+        io.stdout(
+          `secret key (sender):   ${pair.secretKey}\npublic key (receiver): ${pair.publicKey}\n`,
+        );
         return 0;
       }
       case "sign": {

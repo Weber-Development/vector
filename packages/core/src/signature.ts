@@ -1,3 +1,13 @@
+import {
+  assertKey,
+  isPublicKey,
+  isSecretKey,
+  PUBLIC_KEY_PREFIX,
+  publicKeyFor,
+  SECRET_KEY_PREFIX,
+  signEd25519,
+  verifyEd25519,
+} from "./asymmetric";
 import { fromBase64, randomBytes, timingSafeEqual, toBase64, utf8 } from "./encoding";
 
 /** Header names from the Standard Webhooks specification (also used by Svix as `svix-*`). */
@@ -8,6 +18,11 @@ export const HEADER_SIGNATURE = "webhook-signature";
 const SECRET_PREFIX = "whsec_";
 const DEFAULT_TOLERANCE_SECONDS = 5 * 60;
 
+/**
+ * A symmetric `whsec_` secret (or its raw bytes) for `v1` HMAC signatures, or an Ed25519 key for
+ * `v1a` signatures: the sender signs with a `whsk_` secret key, receivers verify with the
+ * `whpk_` public key.
+ */
 export type WebhookSecret = string | Uint8Array;
 
 export type HeaderSource =
@@ -44,6 +59,9 @@ export function generateSecret(byteLength = 24): string {
 /** Turns a `whsec_...` string (or raw bytes) into the key bytes. */
 export function secretToBytes(secret: WebhookSecret): Uint8Array {
   if (typeof secret !== "string") return secret;
+  if (secret.startsWith(SECRET_KEY_PREFIX) || secret.startsWith(PUBLIC_KEY_PREFIX)) {
+    throw new TypeError("whsk_ and whpk_ keys are Ed25519 keys, not HMAC secrets.");
+  }
   const body = secret.startsWith(SECRET_PREFIX) ? secret.slice(SECRET_PREFIX.length) : secret;
   try {
     return fromBase64(body);
@@ -101,10 +119,21 @@ export interface SignInput {
   secret: WebhookSecret;
 }
 
-/** Returns the signature in the `v1,<base64>` format. */
+function signedContent(id: string, timestamp: Date | number, payload: string | Uint8Array) {
+  return `${id}.${toSeconds(timestamp)}.${payloadToString(payload)}`;
+}
+
+/**
+ * Returns the signature: `v1,<base64>` (HMAC-SHA256) for a `whsec_` secret, `v1a,<base64>`
+ * (Ed25519) for a `whsk_` secret key.
+ */
 export async function sign(input: SignInput): Promise<string> {
+  const content = signedContent(input.id, input.timestamp, input.payload);
+  if (isSecretKey(input.secret)) return signEd25519(utf8(content), input.secret);
+  if (isPublicKey(input.secret)) {
+    throw new TypeError("A whpk_ public key can only verify. Sign with the whsk_ secret key.");
+  }
   const key = await importKey(input.secret);
-  const content = `${input.id}.${toSeconds(input.timestamp)}.${payloadToString(input.payload)}`;
   const mac = await globalThis.crypto.subtle.sign("HMAC", key, utf8(content) as BufferSource);
   return `v1,${toBase64(new Uint8Array(mac))}`;
 }
@@ -160,6 +189,8 @@ export interface VerifiedWebhook<T = unknown> {
 /**
  * Verifies a webhook the way the Standard Webhooks specification describes it, and parses the
  * JSON body. Accepts `webhook-*` and `svix-*` headers. Pass several secrets while you rotate one.
+ * A `whsec_` secret checks `v1` (HMAC) signatures, a `whpk_` public key checks `v1a` (Ed25519)
+ * signatures.
  *
  * Always pass the raw body exactly as received; a re-serialised JSON object will not match.
  */
@@ -197,15 +228,22 @@ export async function verify<T = unknown>(
   }
 
   const raw = payloadToString(payload);
-  const received = signatureHeader
-    .split(" ")
-    .map((part) => part.trim())
-    .filter((part) => part.startsWith("v1,"));
+  const parts = signatureHeader.split(" ").map((part) => part.trim());
+  const symmetric = parts.filter((part) => part.startsWith("v1,"));
+  const asymmetric = parts.filter((part) => part.startsWith("v1a,"));
   const secrets = Array.isArray(secret) ? secret : [secret];
   let matched = false;
   for (const candidate of secrets) {
+    if (isPublicKey(candidate) || isSecretKey(candidate)) {
+      const publicKey = isPublicKey(candidate) ? candidate : await publicKeyFor(candidate);
+      const content = utf8(signedContent(id, timestamp, raw));
+      for (const signature of asymmetric) {
+        if (await verifyEd25519(content, signature, publicKey)) matched = true;
+      }
+      continue;
+    }
     const expected = await sign({ id, timestamp, payload: raw, secret: candidate });
-    for (const signature of received) {
+    for (const signature of symmetric) {
       if (timingSafeEqual(signature, expected)) matched = true;
     }
   }
@@ -243,7 +281,10 @@ export class Webhook {
   constructor(secret: WebhookSecret | WebhookSecret[], options: VerifyOptions = {}) {
     this.secrets = Array.isArray(secret) ? secret : [secret];
     if (this.secrets.length === 0) throw new TypeError("At least one secret is required.");
-    for (const s of this.secrets) secretToBytes(s);
+    for (const s of this.secrets) {
+      if (isSecretKey(s) || isPublicKey(s)) assertKey(s);
+      else secretToBytes(s);
+    }
     this.options = options;
   }
 

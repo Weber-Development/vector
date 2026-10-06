@@ -51,4 +51,4 @@ Vector Pro has a retention helper that does this in batches.
 
 ## Your own database
 
-Any database works if you implement the `VectorStore` interface (about fifteen small methods). The one that needs care is `claimDueDeliveries`: it must atomically lock the deliveries it returns, so that two workers never get the same one.
+Vector also ships [SQLite and MySQL stores](sqlite-mysql.md). Any other database works if you implement the `VectorStore` interface (about fifteen small methods). The one that needs care is `claimDueDeliveries`: it must atomically lock the deliveries it returns, so that two workers never get the same one.

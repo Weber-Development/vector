@@ -57,6 +57,30 @@ describe("cli", () => {
     expect(await runCli([...args, "--signature", signature!], bad.io)).toBe(1);
   });
 
+  it("creates a key pair, signs with the secret key and verifies with the public key", async () => {
+    const k = io();
+    expect(await runCli(["keypair"], k.io)).toBe(0);
+    const text = k.out.join("");
+    const secretKey = text.match(/whsk_\S+/)?.[0] as string;
+    const publicKey = text.match(/whpk_\S+/)?.[0] as string;
+    expect(secretKey).toBeTruthy();
+    expect(publicKey).toBeTruthy();
+
+    const s = io('{"a":1}');
+    const signArgs = ["sign", "--secret", secretKey, "--id", "msg_1", "--timestamp", "1700000000"];
+    expect(await runCli(signArgs, s.io)).toBe(0);
+    const signature = s.out
+      .find((l) => l.startsWith("webhook-signature"))
+      ?.split(": ")[1]
+      ?.trim() as string;
+    expect(signature).toMatch(/^v1a,/);
+    const args = ["verify", "--secret", publicKey, "--id", "msg_1", "--timestamp", "1700000000"];
+    const v = io('{"a":1}');
+    expect(await runCli([...args, "--signature", signature], v.io)).toBe(0);
+    const bad = io('{"a":2}');
+    expect(await runCli([...args, "--signature", signature], bad.io)).toBe(1);
+  });
+
   it("listens locally and verifies incoming webhooks", async () => {
     const t = io();
     const running = runCli(["listen", "--port", "0", "--secret", secret], t.io);
