@@ -85,3 +85,7 @@ Vector follows the [Standard Webhooks](https://www.standardwebhooks.com) specifi
 ## Rotating the secret
 
 When the sender rotates the secret, requests carry signatures for the old and the new secret for a grace period (24 hours by default). Switch to the new secret any time within it, or pass both while you switch: `verify(body, headers, [oldSecret, newSecret])`.
+
+## Public keys
+
+If the sender uses Ed25519, you get a `whpk_` public key instead of a secret and the signature starts with `v1a,`. Pass the public key wherever this page passes the secret. See [Public-key signatures](public-keys.md).

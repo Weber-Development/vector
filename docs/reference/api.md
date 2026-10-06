@@ -1,6 +1,6 @@
 ---
 title: API reference
-description: Every export of @sweberdev/vector and @sweberdev/vector/postgres.
+description: Every export of @sweberdev/vector and its PostgreSQL, SQLite and MySQL stores.
 ---
 
 ## Sending: `@sweberdev/vector`
@@ -21,6 +21,7 @@ Returns a `Vector`. Options, all optional:
 | `disableEndpointAfter` | `10` | Failed deliveries in a row before an endpoint is disabled; `0` never |
 | `disableOnGone` | `true` | Disable endpoints that answer `410` |
 | `secretRotationGraceSeconds` | `86400` | How long the old secret keeps signing |
+| `signing` | `"hmac"` | Scheme for new endpoints: `"hmac"` (`whsec_` secret, `v1`) or `"ed25519"` (`whsk_` key, `v1a`) |
 | `envelope` | `true` | Body `{ type, timestamp, data }`; `false` sends the bare payload |
 | `fetch`, `now`, `random` | globals | For tests |
 | `onError` | `console.error` | Errors from listeners and the worker |
@@ -29,12 +30,13 @@ Returns a `Vector`. Options, all optional:
 
 | Method | Returns |
 |---|---|
-| `create(input)` | `Endpoint`. Input: `url`, `tenant?`, `description?`, `eventTypes?`, `headers?`, `metadata?`, `secret?`, `enabled?` |
+| `create(input)` | `Endpoint`. Input: `url`, `tenant?`, `description?`, `eventTypes?`, `headers?`, `metadata?`, `secret?`, `signing?`, `enabled?` |
 | `get(id, scope?)` | `Endpoint \| undefined` |
 | `list(query?)` | `Endpoint[]`. Query: `tenant?`, `limit?`, `before?` |
 | `update(id, input, scope?)` | `Endpoint \| undefined`. Input: `url?`, `description?`, `eventTypes?`, `headers?`, `metadata?`, `enabled?` |
 | `delete(id, scope?)` | `boolean` |
-| `rotateSecret(id, { tenant?, secret?, graceSeconds? })` | `Endpoint \| undefined` |
+| `rotateSecret(id, { tenant?, secret?, graceSeconds? })` | `Endpoint \| undefined`; keeps the endpoint's scheme |
+| `publicKey(id, scope?)` | `{ publicKey, previousPublicKey }` for Ed25519 endpoints, `null` for HMAC ones, `undefined` if missing |
 
 `scope` is `{ tenant }`; items of other tenants are treated as missing.
 
@@ -66,13 +68,18 @@ Returns a `Vector`. Options, all optional:
 | Export | |
 |---|---|
 | `generateSecret(bytes = 24)` | New `whsec_` secret |
-| `sign({ id, timestamp, payload, secret })` | `Promise<"v1,...">` |
+| `generateKeyPair()` | `Promise<{ secretKey: "whsk_...", publicKey: "whpk_..." }>` (Ed25519) |
+| `publicKeyFor(secretKey)` | `Promise<"whpk_...">` for a `whsk_` key |
+| `sign({ id, timestamp, payload, secret })` | `Promise<"v1,...">`, or `"v1a,..."` with a `whsk_` key |
 | `signHeaders({ id, timestamp, payload, secret, secrets? })` | The three `webhook-*` headers; extra `secrets` add signatures |
-| `verify(payload, headers, secret \| secrets, { toleranceSeconds?, now? })` | `Promise<{ id, timestamp, payload, raw }>` or throws `WebhookVerificationError` |
+| `verify(payload, headers, key \| keys, { toleranceSeconds?, now? })` | `Promise<{ id, timestamp, payload, raw }>` or throws `WebhookVerificationError` |
 | `verifyRequest(request, secret \| secrets, options?)` | Same, for a Fetch API `Request` |
 | `new Webhook(secret \| secrets, options?)` | `.verify(payload, headers)`, `.sign(id, timestamp, payload)` |
 | `WebhookVerificationError` | `.code`: `missing_headers`, `invalid_timestamp`, `timestamp_too_old`, `timestamp_too_new`, `no_matching_signature`, `invalid_payload` |
 | `HEADER_ID`, `HEADER_TIMESTAMP`, `HEADER_SIGNATURE` | Header names |
+| `SECRET_KEY_PREFIX`, `PUBLIC_KEY_PREFIX` | `"whsk_"`, `"whpk_"` |
+
+Wherever a secret is taken, a key can be a `whsec_` secret (checks `v1`) or a `whpk_` public key (checks `v1a`); a `whsk_` key verifies with its public key.
 
 ## URL checks
 
@@ -92,3 +99,19 @@ Returns a `Vector`. Options, all optional:
 | `createPostgresStore({ query, tablePrefix? })` | `PostgresStore` with `migrate()` |
 | `postgresSchema(tablePrefix?)` | The `create table` SQL |
 | `PostgresQuery` | `(text, params) => Promise<{ rows }>` |
+
+## `@sweberdev/vector/sqlite`
+
+| Export | |
+|---|---|
+| `createSqliteStore({ database, tablePrefix? })` | `SqliteStore` with `migrate()`; `database` is a `node:sqlite` `DatabaseSync` or a `better-sqlite3` database |
+| `sqliteSchema(tablePrefix?)` | The `create table` SQL |
+
+## `@sweberdev/vector/mysql`
+
+| Export | |
+|---|---|
+| `createMysqlStore({ query, tablePrefix? })` | `MysqlStore` with `migrate()` |
+| `mysql2Query(pool)` | Adapts a `mysql2/promise` pool or connection to `query` |
+| `mysqlSchema(tablePrefix?)` | The `create table` SQL |
+| `MysqlQuery` | `(sql, params) => Promise<{ rows, affectedRows }>` |

@@ -1,6 +1,6 @@
 # @sweberdev/vector
 
-Self-hosted webhooks for Node.js and TypeScript: Standard Webhooks signatures, retries with backoff, a delivery log, SSRF protection and a PostgreSQL store. A Svix alternative that runs in your app.
+Self-hosted webhooks for Node.js and TypeScript: Standard Webhooks signatures (HMAC or Ed25519), retries with backoff, a delivery log, SSRF protection and stores for PostgreSQL, MySQL and SQLite. A Svix alternative that runs in your app.
 
 ```sh
 pnpm add @sweberdev/vector
@@ -38,6 +38,8 @@ await store.migrate();
 const vector = createVector({ store });
 ```
 
+`@sweberdev/vector/mysql` and `@sweberdev/vector/sqlite` work the same way.
+
 ## Receive
 
 ```ts
@@ -58,6 +60,7 @@ export async function POST(request: Request) {
 
 ```sh
 npx @sweberdev/vector secret
+npx @sweberdev/vector keypair   # Ed25519: whsk_ for you, whpk_ for receivers
 npx @sweberdev/vector listen --secret whsec_...
 npx @sweberdev/vector send https://example.com/webhooks --secret whsec_...
 ```
