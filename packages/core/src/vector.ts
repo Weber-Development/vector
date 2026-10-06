@@ -62,6 +62,19 @@ export interface VectorOptions {
   signing?: SigningScheme;
   /** Custom fetch, for tests or proxies. */
   fetch?: typeof fetch;
+  /**
+   * Sends every request through an undici dispatcher, e.g. `new ProxyAgent(url)` from `undici`, so
+   * deliveries leave from a fixed IP behind an egress proxy. Passed as `dispatcher` to `fetch`.
+   */
+  dispatcher?: unknown;
+  /**
+   * Most requests per second to one endpoint, so a burst of events cannot overload a customer's
+   * server. A number applies to every endpoint; a function chooses per endpoint (`undefined` for
+   * no limit). An endpoint with `metadata.rateLimit` set to a number of requests per second uses
+   * that instead. Deliveries over the limit wait and are not counted as failed attempts. The limit
+   * is kept in memory, so with several worker processes each one applies it on its own.
+   */
+  rateLimit?: number | ((endpoint: Endpoint) => number | undefined);
   /** Clock, for tests. */
   now?: () => Date;
   /** Random number in [0, 1) for retry jitter, for tests. */
@@ -295,9 +308,15 @@ function errorText(error: unknown): string {
 export class Vector {
   readonly store: VectorStore;
   private readonly options: Required<
-    Omit<VectorOptions, "store" | "urlPolicy" | "fetch" | "onError" | "transform">
+    Omit<
+      VectorOptions,
+      "store" | "urlPolicy" | "fetch" | "onError" | "transform" | "dispatcher" | "rateLimit"
+    >
   > & { urlPolicy: UrlPolicy };
   private readonly transform: TransformFunction | undefined;
+  private readonly dispatcher: unknown;
+  private readonly rateLimit: VectorOptions["rateLimit"];
+  private readonly rateState = new Map<string, number>();
   private readonly fetchImpl: typeof fetch;
   private readonly onError: (error: unknown) => void;
   private readonly listeners = new Map<keyof VectorEvents, Set<Listener<never>>>();
@@ -323,6 +342,11 @@ export class Vector {
       throw new RangeError("retrySchedule must contain non-negative numbers of seconds.");
     }
     this.transform = options.transform;
+    this.dispatcher = options.dispatcher;
+    this.rateLimit = options.rateLimit;
+    if (typeof options.rateLimit === "number" && !(options.rateLimit > 0)) {
+      throw new RangeError("rateLimit must be a positive number of requests per second.");
+    }
     this.fetchImpl = options.fetch ?? ((...args) => globalThis.fetch(...args));
     this.onError = options.onError ?? ((error) => console.error("[vector]", error));
   }
@@ -669,6 +693,21 @@ export class Vector {
       return "cancelled";
     }
 
+    const limit = ignoreDisabled ? undefined : this.limitFor(endpoint);
+    if (limit) {
+      const waitMs = this.reserve(endpoint.id, limit);
+      if (waitMs > 0) {
+        const now = this.now();
+        await this.store.updateDelivery(delivery.id, {
+          status: "pending",
+          nextAttemptAt: new Date(now.getTime() + waitMs),
+          lockedUntil: null,
+          updatedAt: now,
+        });
+        return "retrying";
+      }
+    }
+
     const at = this.now();
     const defaultBody: unknown = this.options.envelope
       ? {
@@ -737,7 +776,8 @@ export class Vector {
         body,
         redirect: "manual",
         signal: AbortSignal.timeout(this.options.timeoutMs),
-      });
+        ...(this.dispatcher ? { dispatcher: this.dispatcher } : {}),
+      } as RequestInit);
       statusCode = response.status;
       retryAfter = retryAfterSeconds(response);
       responseBody = await readLimited(response, this.options.maxResponseBytes).catch(() => null);
@@ -828,6 +868,34 @@ export class Vector {
       await this.emit("delivery.failed", { delivery: final, endpoint: current, message });
     }
     return outcome;
+  }
+
+  /** Requests per second for an endpoint, or `undefined` for no limit. */
+  private limitFor(endpoint: Endpoint): number | undefined {
+    const fromEndpoint = Number(endpoint.metadata.rateLimit);
+    if (endpoint.metadata.rateLimit && fromEndpoint > 0 && Number.isFinite(fromEndpoint)) {
+      return fromEndpoint;
+    }
+    const configured =
+      typeof this.rateLimit === "function" ? this.rateLimit(endpoint) : this.rateLimit;
+    return configured !== undefined && configured > 0 ? configured : undefined;
+  }
+
+  /**
+   * Generic cell rate algorithm: one request every `1 / limit` seconds with a burst of
+   * `ceil(limit)`. Returns 0 and takes a slot, or the milliseconds to wait.
+   */
+  private reserve(endpointId: string, limit: number): number {
+    const now = this.now().getTime();
+    const interval = 1000 / limit;
+    const burst = Math.max(1, Math.ceil(limit)) * interval;
+    const next = Math.max(this.rateState.get(endpointId) ?? now, now) + interval;
+    if (next - now > burst) return Math.ceil(next - now - burst);
+    if (this.rateState.size > 10_000) {
+      for (const [id, at] of this.rateState) if (at < now) this.rateState.delete(id);
+    }
+    this.rateState.set(endpointId, next);
+    return 0;
   }
 
   private async disable(endpoint: Endpoint, reason: string): Promise<Endpoint> {

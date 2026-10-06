@@ -24,6 +24,8 @@ Returns a `Vector`. Options, all optional:
 | `signing` | `"hmac"` | Scheme for new endpoints: `"hmac"` (`whsec_` secret, `v1`) or `"ed25519"` (`whsk_` key, `v1a`) |
 | `envelope` | `true` | Body `{ type, timestamp, data }`; `false` sends the bare payload |
 | `transform` | none | `({ message, endpoint, body }) => { body?, headers?, skip? } \| undefined`: changes one delivery; see [Sending](../guides/sending.md) |
+| `rateLimit` | none | Requests per second per endpoint: a number, or `(endpoint) => number \| undefined`; `metadata.rateLimit` overrides. See [Retries](../guides/retries.md) |
+| `dispatcher` | none | An undici dispatcher (e.g. `ProxyAgent`) for egress through a proxy. See [Security](../guides/security.md) |
 | `fetch`, `now`, `random` | globals | For tests |
 | `onError` | `console.error` | Errors from listeners and the worker |
 
