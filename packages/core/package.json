@@ -1,7 +1,7 @@
 {
   "name": "@sweberdev/vector",
   "version": "0.1.0",
-  "description": "Self-hosted webhooks for Node.js and TypeScript: Standard Webhooks signatures, retries with backoff, delivery log, SSRF protection and a Postgres store. A Svix alternative you run yourself.",
+  "description": "Self-hosted webhooks for Node.js and TypeScript: Standard Webhooks signatures (HMAC and Ed25519), retries with backoff, delivery log, SSRF protection and Postgres, MySQL and SQLite stores. A Svix alternative you run yourself.",
   "license": "MIT",
   "author": "Seya Weber (https://github.com/sxwxbxr)",
   "homepage": "https://packages.sweber.dev/vector/docs",
@@ -39,6 +39,26 @@
         "default": "./dist/postgres.cjs"
       }
     },
+    "./sqlite": {
+      "import": {
+        "types": "./dist/sqlite.d.ts",
+        "default": "./dist/sqlite.js"
+      },
+      "require": {
+        "types": "./dist/sqlite.d.cts",
+        "default": "./dist/sqlite.cjs"
+      }
+    },
+    "./mysql": {
+      "import": {
+        "types": "./dist/mysql.d.ts",
+        "default": "./dist/mysql.js"
+      },
+      "require": {
+        "types": "./dist/mysql.d.cts",
+        "default": "./dist/mysql.cjs"
+      }
+    },
     "./cli": {
       "import": {
         "types": "./dist/cli.d.ts",
@@ -71,7 +91,9 @@
     "retries",
     "self-hosted",
     "postgres",
-    "ssrf"
+    "ssrf",
+    "sqlite",
+    "mysql"
   ],
   "engines": {
     "node": ">=20.16"
@@ -88,6 +110,7 @@
   "devDependencies": {
     "@electric-sql/pglite": "^0.3.0",
     "@types/node": "^22.20.5",
+    "mysql2": "^3.24.5",
     "standardwebhooks": "^1.0.0",
     "tsup": "^8.5.1",
     "typescript": "^5.9.0",

@@ -24,3 +24,30 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm check:packages
+
+  mysql:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: vector
+          MYSQL_DATABASE: vector
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -pvector"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @sweberdev/vector exec vitest run test/sql-stores.test.ts
+        env:
+          VECTOR_MYSQL_URL: mysql://root:vector@127.0.0.1:3306/vector
