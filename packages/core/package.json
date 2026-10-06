@@ -1,6 +1,6 @@
 {
   "name": "@sweberdev/vector",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Self-hosted webhooks for Node.js and TypeScript: Standard Webhooks signatures (HMAC and Ed25519), retries with backoff, delivery log, SSRF protection and Postgres, MySQL and SQLite stores. A Svix alternative you run yourself.",
   "license": "MIT",
   "author": "Seya Weber (https://github.com/sxwxbxr)",
