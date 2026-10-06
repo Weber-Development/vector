@@ -7,7 +7,7 @@ Part of Vector Pro. An embeddable webhook portal for your customers, on top of [
 
 Three layers, use what you need:
 
-- **Server** (`@weber-development/vector-portal`): `createPortalHandler(vector, options)` returns a Fetch-API handler `(request: Request) => Promise<Response>` for Next.js route handlers, Hono, Bun, Deno or Workers. `toNodeHandler` adapts it to Node `http` and Express.
+- **Server** (`@weber-development/vector-portal`): `createPortalHandler(vector, options)` returns a Fetch-API handler `(request: Request) => Promise<Response>` for Next.js route handlers, Hono, Bun, Deno or Workers. `toNodeHandler` adapts it to Node `http` and Express, `toHonoHandler` and `toFastifyHandler` to Hono and Fastify.
 - **Client** (`@weber-development/vector-portal/client`): `createPortalClient(apiBase, { fetch?, headers? })`, a typed client for the API.
 - **React** (`@weber-development/vector-portal/react`): `<WebhookPortal />` plus `EndpointList`, `EndpointForm`, `EndpointDetail`, `MessageLog` and `EventCatalog`. Styles in `@weber-development/vector-portal/styles.css`.
 
@@ -63,6 +63,18 @@ import { createPortalHandler, toNodeHandler } from "@weber-development/vector-po
 
 app.use("/api/webhooks", toNodeHandler(createPortalHandler(vector, { basePath: "/api/webhooks", authorize })));
 ```
+
+With Hono or Fastify:
+
+```ts
+import { toFastifyHandler, toHonoHandler } from "@weber-development/vector-portal";
+
+const portal = createPortalHandler(vector, { basePath: "/webhooks", authorize });
+hono.all("/webhooks/*", toHonoHandler(portal));
+fastify.all("/webhooks/*", toFastifyHandler(portal));
+```
+
+The Fastify adapter serialises the already parsed JSON body again, so the default content-type parser is fine.
 
 The portal API only changes data. Deliveries still need a worker: `vector.start()` or `vector.process()` from the free package.
 
