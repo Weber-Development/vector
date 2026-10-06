@@ -27,7 +27,8 @@
         "pro/catalog",
         "pro/ops",
         "pro/inbound",
-        "pro/transform"
+        "pro/transform",
+        "pro/otel"
       ]
     },
     {
