@@ -49,6 +49,30 @@ The payload must be JSON. It becomes `data` in the body `{ type, timestamp, data
 
 **Only some endpoints.** `endpointIds` limits a send to those endpoints; they still have to match the tenant and the event type.
 
+## Changing the body per endpoint
+
+Not every receiver wants the `{ type, timestamp, data }` envelope. A Slack channel wants blocks, a partner wants only three fields. The `transform` option of `createVector` runs before every attempt and can replace the body, add headers or skip the delivery:
+
+```ts
+const vector = createVector({
+  store,
+  transform: ({ message, endpoint, body }) => {
+    if (endpoint.metadata.format === "slack") {
+      return { body: { text: `${message.eventType} happened` } };
+    }
+    if (message.eventType.startsWith("debug.")) return { skip: "Debug events are not delivered" };
+    return undefined; // keep the default body
+  },
+});
+```
+
+- Return `{ body }` with any JSON value to send that instead. The new body is signed like any other.
+- Return `{ headers }` to add headers for this delivery. Vector's own headers (`content-type`, `user-agent`, `webhook-*`) cannot be overridden.
+- Return `{ skip: "reason" }` to not deliver this message to this endpoint. The delivery is cancelled and the reason is kept in `lastError`.
+- If the function throws, the attempt counts as failed with the error `Transform failed: ...` and is retried like any other failure, so a fixed template delivers the event later.
+
+Keep the function fast and free of side effects: it runs again for every retry. Vector Pro's `vector-transform` brings ready-made Slack, Microsoft Teams, Discord and Google Chat formats on top of this hook.
+
 ## Test events
 
 ```ts

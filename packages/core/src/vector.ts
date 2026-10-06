@@ -71,9 +71,37 @@ export interface VectorOptions {
    * payload as the whole body, like Svix does. Default true.
    */
   envelope?: boolean;
+  /**
+   * Changes what one delivery sends, per endpoint: a different body (Slack, Teams or Discord
+   * formats, fewer fields), extra headers, or skipping the delivery. Called before every attempt,
+   * so keep it fast and free of side effects. The result is signed like any other body. If it
+   * throws, the attempt fails and is retried like any other failure.
+   */
+  transform?: TransformFunction;
   /** Called for errors in listeners and the background worker. Default `console.error`. */
   onError?: (error: unknown) => void;
 }
+
+/** What `VectorOptions.transform` gets for one delivery. */
+export interface TransformContext {
+  message: Message;
+  endpoint: Endpoint;
+  /** The default body of this delivery: `{ type, timestamp, data }`, or the bare payload. */
+  body: unknown;
+}
+
+export interface TransformResult {
+  /** The body to send instead; any JSON value. Leave out to keep the default body. */
+  body?: unknown;
+  /** Extra headers for this delivery; Vector's own headers cannot be overridden. */
+  headers?: Record<string, string>;
+  /** Do not deliver this message to this endpoint. The delivery is cancelled with this reason. */
+  skip?: string | boolean;
+}
+
+export type TransformFunction = (
+  context: TransformContext,
+) => TransformResult | undefined | Promise<TransformResult | undefined>;
 
 export interface CreateEndpointInput {
   url: string;
@@ -267,8 +295,9 @@ function errorText(error: unknown): string {
 export class Vector {
   readonly store: VectorStore;
   private readonly options: Required<
-    Omit<VectorOptions, "store" | "urlPolicy" | "fetch" | "onError">
+    Omit<VectorOptions, "store" | "urlPolicy" | "fetch" | "onError" | "transform">
   > & { urlPolicy: UrlPolicy };
+  private readonly transform: TransformFunction | undefined;
   private readonly fetchImpl: typeof fetch;
   private readonly onError: (error: unknown) => void;
   private readonly listeners = new Map<keyof VectorEvents, Set<Listener<never>>>();
@@ -293,6 +322,7 @@ export class Vector {
     if (this.options.retrySchedule.some((s) => !(s >= 0))) {
       throw new RangeError("retrySchedule must contain non-negative numbers of seconds.");
     }
+    this.transform = options.transform;
     this.fetchImpl = options.fetch ?? ((...args) => globalThis.fetch(...args));
     this.onError = options.onError ?? ((error) => console.error("[vector]", error));
   }
@@ -640,13 +670,39 @@ export class Vector {
     }
 
     const at = this.now();
-    const body = this.options.envelope
-      ? JSON.stringify({
+    const defaultBody: unknown = this.options.envelope
+      ? {
           type: message.eventType,
           timestamp: message.createdAt.toISOString(),
           data: message.payload,
-        })
-      : JSON.stringify(message.payload);
+        }
+      : message.payload;
+    let body = JSON.stringify(defaultBody);
+    let extraHeaders: Record<string, string> = {};
+    let transformError: string | null = null;
+    if (this.transform) {
+      try {
+        const changed = await this.transform({ message, endpoint, body: defaultBody });
+        if (changed?.skip) {
+          await this.store.updateDelivery(delivery.id, {
+            status: "cancelled",
+            nextAttemptAt: null,
+            lockedUntil: null,
+            lastError: typeof changed.skip === "string" ? changed.skip : "Skipped by transform",
+            updatedAt: this.now(),
+          });
+          return "cancelled";
+        }
+        if (changed && "body" in changed) {
+          const json = JSON.stringify(changed.body);
+          if (json === undefined) throw new TypeError("The transformed body must be JSON.");
+          body = json;
+        }
+        extraHeaders = changed?.headers ?? {};
+      } catch (caught) {
+        transformError = `Transform failed: ${errorText(caught)}`;
+      }
+    }
     const previous =
       endpoint.previousSecret &&
       endpoint.previousSecretExpiresAt &&
@@ -667,11 +723,13 @@ export class Vector {
     let retryAfter: number | undefined;
     const started = Date.now();
     try {
+      if (transformError) throw new Error(transformError);
       await assertDeliverableUrl(endpoint.url, this.options.urlPolicy);
       const response = await this.fetchImpl(endpoint.url, {
         method: "POST",
         headers: {
           ...endpoint.headers,
+          ...extraHeaders,
           "content-type": "application/json",
           "user-agent": this.options.userAgent,
           ...signed,

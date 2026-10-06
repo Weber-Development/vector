@@ -23,6 +23,7 @@ Returns a `Vector`. Options, all optional:
 | `secretRotationGraceSeconds` | `86400` | How long the old secret keeps signing |
 | `signing` | `"hmac"` | Scheme for new endpoints: `"hmac"` (`whsec_` secret, `v1`) or `"ed25519"` (`whsk_` key, `v1a`) |
 | `envelope` | `true` | Body `{ type, timestamp, data }`; `false` sends the bare payload |
+| `transform` | none | `({ message, endpoint, body }) => { body?, headers?, skip? } \| undefined`: changes one delivery; see [Sending](../guides/sending.md) |
 | `fetch`, `now`, `random` | globals | For tests |
 | `onError` | `console.error` | Errors from listeners and the worker |
 
