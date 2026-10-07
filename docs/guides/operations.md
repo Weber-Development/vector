@@ -19,7 +19,7 @@ A failed attempt is retried by the retry schedule (eight attempts over about 27 
 
 ## Upgrading
 
-1. Read the changelog of the versions you skip. Before 1.0.0, minor versions can contain breaking changes; from 1.0.0 only majors do. See [Stability and versioning](../reference/stability.md).
+1. Read the changelog of the versions you skip. From 1.0.0 only major versions contain breaking changes. See [Stability and versioning](../reference/stability.md).
 2. Update the package, then run `await store.migrate()` (or the SQL from the schema function in your own migration tool). It only adds what is missing and is safe on every deploy.
 3. Deploy workers and senders in any order. The schema only grows within a major version, so old and new code can share one database during a rolling deploy.
 4. Update the Pro packages together; they share one version number and must be at the same version as each other.

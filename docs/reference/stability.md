@@ -3,7 +3,7 @@ title: Stability and versioning
 description: What counts as Vector's public API, what a breaking change is, and how deprecations work.
 ---
 
-Vector follows [semantic versioning](https://semver.org). From 1.0.0 on, a breaking change to anything listed below only ships in a new major version. Until then (0.x), minor versions may change things, and the changelog says so.
+Vector follows [semantic versioning](https://semver.org). From 1.0.0 on, a breaking change to anything listed below only ships in a new major version. Before 1.0.0 (versions 0.x), minor versions could change things; 0.7.0 was the frozen release candidate and 1.0.0 has the same API.
 
 ## What is public API
 
