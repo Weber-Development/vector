@@ -39,10 +39,11 @@ Every route is scoped to the tenant that `authorize` returns. Ids of other tenan
 
 | Route | |
 |---|---|
-| `GET /endpoints` · `POST /endpoints` | List, create (`url`, `description`, `eventTypes`, `headers`, `enabled`) |
+| `GET /endpoints` · `POST /endpoints` | List, create (`url`, `description`, `eventTypes`, `filter`, `headers`, `enabled`) |
 | `GET` · `PATCH` · `DELETE /endpoints/:id` | Read, update, delete |
 | `GET /endpoints/:id/secret` | The signing secret (and the previous one during a rotation) |
 | `POST /endpoints/:id/rotate-secret` | New secret; optional `{ graceSeconds }` |
+| `POST /endpoints/:id/replay` | Sends the stored messages of a time range to this endpoint again, oldest first. Body `{ from, to?, eventTypes?, limit? }`: ISO 8601 dates, at most 31 days back, `limit` 1 to 1000 (default 200). Answers `{ messages, deliveries, truncated }`. Needs `@sweberdev/vector` 2 |
 | `POST /endpoints/:id/test` | Sends a `webhook.test` event now; optional `{ payload }` |
 | `GET /endpoints/:id/attempts` | Recent attempts (`limit`, `before`) |
 | `GET /messages` | Message log with delivery status. Filters: `eventType` (exact or a pattern such as `invoice.*`), `status`, `endpointId`, `since`, `q` (a message id, or text in the event type or payload); paging with `before` and `limit` up to 100 |
@@ -51,6 +52,8 @@ Every route is scoped to the tenant that `authorize` returns. Ids of other tenan
 | `POST /deliveries/:id/retry` | Queue a delivery again |
 | `GET /event-types` | The `eventTypes` option (array or function) |
 | `GET /stats` | Per-endpoint attempts and success rate over the last 24 hours |
+
+`filter` is a payload filter of Vector 2 (see [Sending](../guides/sending.md#payload-filters)); `null` removes it and invalid filters answer 400. Endpoint objects always contain `filter`. In the client, `client.replay(endpointId, { from })` calls the replay route.
 
 Lists page backwards: pass the `next` value of a response as `before`.
 

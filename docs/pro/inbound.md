@@ -70,9 +70,11 @@ Because these are ordinary Vector messages, the delivery log, `vector.retry`, `v
 | `linear({ secret, toleranceSeconds? })` | `Linear-Signature`, `webhookTimestamp` within 60 s | entity and `action`, e.g. `issue.create` | `Linear-Delivery` |
 | `sentry({ secret })` | `Sentry-Hook-Signature` | `Sentry-Hook-Resource` plus `action`, e.g. `issue.created` | `Request-ID` |
 | `lemonSqueezy({ secret })` | `X-Signature` | `meta.event_name`, e.g. `order_created` | the body's SHA-256 (no id is sent) |
+| `slack({ secret, toleranceSeconds? })` | `X-Slack-Signature` (`v0`) and `X-Slack-Request-Timestamp` (300 s tolerance) | the inner `event.type` of an `event_callback` (e.g. `app_mention`), else the outer `type` | `event_id` |
+| `twilio({ authToken, url })` | `X-Twilio-Signature` (HMAC-SHA1 over the public URL and the form fields; JSON bodies through `bodySHA256`) | `message.<status>`, `call.<status>`, `message.received` or `event` | `I-Twilio-Idempotency-Token`, else the SID and status |
 | `hmacSource({ secret, header, algorithm?, encoding?, prefix?, idHeader?, eventType, timestampHeader? })` | HMAC over the body (or `{timestamp}.{body}`), SHA-1/256/512, hex or base64 | a header or a function of the payload | `idHeader`, else the body's SHA-256 |
 
-`secret` takes a list during a rotation; a request signed with any of them is accepted. GitHub webhooks must use the content type `application/json`. Slack's Events API and Twilio are not covered yet: Slack needs an answer to its URL verification challenge, and Twilio signs the full URL and form fields; use `hmacSource` or your own source for services with a plain HMAC. A source is any object with `provider` and `verify({ body, headers, now })`, so you can add your own.
+`secret` takes a list during a rotation; a request signed with any of them is accepted. GitHub webhooks must use the content type `application/json`. Slack's `url_verification` challenge is verified, but your own route has to answer it with the `challenge` value. Twilio signs the exact public URL, so pass the one configured in the Twilio console to `twilio({ url })`, also behind a proxy that rewrites it. The Slack and Twilio sources are tested with generated and documented signatures, **not yet verified against live accounts**. Use `hmacSource` or your own source for services with a plain HMAC. A source is any object with `provider` and `verify({ body, headers, now })`, so you can add your own.
 
 ## Answers
 
