@@ -4,5 +4,7 @@
   "initialVersions": {
     "@sweberdev/vector": "1.0.0"
   },
-  "changesets": []
+  "changesets": [
+    "vector-2-0"
+  ]
 }
