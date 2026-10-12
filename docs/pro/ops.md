@@ -67,6 +67,24 @@ app.get("/metrics", async (_req, res) => {
 
 or count live in the worker process with `createMetricsCollector(vector)` and serve `collector.metrics()`: counters `vector_attempts_total`, `vector_deliveries_completed_total`, `vector_endpoints_disabled_total` and the histogram `vector_attempt_duration_seconds`. Both use the labels `endpoint` (id) and `tenant`.
 
+## SLO, alert rules and dashboard
+
+```ts
+import { grafanaDashboard, prometheusRules, sloStatus } from "@weber-development/vector-ops";
+
+const slo = await sloStatus(vector, {
+  since: new Date(Date.now() - 28 * 86_400_000),
+  objective: 0.995, // default 0.99
+});
+// slo.successRate, slo.allowedFailures, slo.budgetRemaining, slo.burnRate, slo.met
+// slo.endpoints: the endpoints that miss the objective, worst burn rate first
+
+await writeFile("vector.rules.yml", prometheusRules({ objective: 0.995, labels: { team: "platform" } }));
+await writeFile("vector.dashboard.json", grafanaDashboard({ objective: 0.995 }));
+```
+
+`sloStatus` counts attempts, not deliveries: a retry that succeeds still used one failed attempt. A burn rate of 1 uses exactly the error budget over the window, 2 uses it twice as fast. `prometheusRules` writes alert rules for a fast burn (14.4 times over one hour and five minutes) and a slow burn (6 times over six hours and 30 minutes), a growing backlog (`backlogThreshold`, default 1000) and a disabled endpoint, for the counters of `createMetricsCollector` and the gauges of `prometheusMetrics`; list the file under `rule_files`. `grafanaDashboard` writes a dashboard with the success ratio against the objective, attempts by outcome, p95 duration, backlog and endpoint tables; import it in Grafana. The files are parsed and checked in tests, but **not yet run through `promtool` or imported into Grafana**. Mutual TLS or a fixed egress IP is a matter of your proxy: pass an undici dispatcher to Vector's `dispatcher` option, see [Security](../guides/security.md).
+
 ## Circuit breaker
 
 An endpoint that is down should not eat the retry schedule of every message you send it. The circuit breaker holds deliveries while an endpoint keeps failing and probes it now and then:

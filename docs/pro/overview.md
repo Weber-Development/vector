@@ -14,7 +14,7 @@ Vector Pro adds six packages to the free library. They cover what teams usually 
 | [`vector-transform`](transform.md) | Messages in the format Slack, Microsoft Teams, Discord and Google Chat expect, written from templates per event type and escaped against mentions, plus pick, omit and redact of fields for every other endpoint. |
 | [`vector-otel`](otel.md) | OpenTelemetry spans and metrics for every delivery attempt, for Grafana, Datadog, Honeycomb or any other backend. No dependency on the OpenTelemetry SDK; URL and tenant are not recorded unless you ask. |
 
-`vector-transform` needs `@sweberdev/vector` 0.3 or later and `vector-otel` 0.5 or later; the other four need 0.1 or later (the circuit breaker needs 0.5).
+Vector Pro 2.x is built and tested for `@sweberdev/vector` 2.x and needs Node.js 22. Pro 1.x keeps working with `@sweberdev/vector` 1.x and gets security and bug fixes until 12 months after the release of 2.0 (see [Migrating to 2.0](../migrating-to-2.md)). Replay in the portal and payload filters need the 2.x core.
 
 ## Licence and installation
 

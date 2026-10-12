@@ -108,6 +108,23 @@ Endpoint metadata holds strings, so `shapeMetadata` stores the shape as JSON in 
 
 The stored message is never changed; only what is sent to that endpoint.
 
+## Preview
+
+`previewTransform` runs a transform on an example event without sending anything, for a test, a script or an admin screen:
+
+```ts
+import { createTransform, previewTransform } from "@weber-development/vector-transform";
+
+const preview = previewTransform(createTransform(), {
+  eventType: "invoice.paid",
+  payload: { id: "inv_1", amount: 4200 },
+  url: "https://hooks.slack.com/services/T/B/x", // decides the format
+  metadata: {}, // e.g. { format: "teams" } or shapeMetadata({ pick: ["id"] })
+});
+// preview.format: "slack"; preview.body: the message; preview.defaultBody: the JSON body;
+// preview.changed, preview.skip, preview.headers
+```
+
 ## Options
 
 | Option | Default | |
