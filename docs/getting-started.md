@@ -9,7 +9,7 @@ description: Install Vector, register an endpoint, send an event and verify it o
 pnpm add @sweberdev/vector
 ```
 
-Vector needs Node.js 20.16 or newer for sending. Verifying also works in browsers, edge runtimes, Bun and Deno.
+Vector needs Node.js 22 or newer for sending. Verifying also works in browsers, edge runtimes, Bun and Deno.
 
 ## Send
 

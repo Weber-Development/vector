@@ -10,13 +10,21 @@ import type {
   Page,
   VectorStore,
 } from "./types";
+import { SCHEMA_VERSION } from "./types";
 
-function page<T extends { createdAt?: Date; at?: Date }>(items: T[], query: Page): T[] {
+function page<T extends { id?: string; createdAt?: Date; at?: Date }>(
+  items: T[],
+  query: Page & { beforeId?: string },
+): T[] {
   const time = (item: T) => (item.createdAt ?? item.at ?? new Date(0)).getTime();
   const before = query.before?.getTime();
+  const after = (item: T) =>
+    before === undefined ||
+    time(item) < before ||
+    (query.beforeId !== undefined && time(item) === before && (item.id ?? "") < query.beforeId);
   return items
-    .filter((item) => before === undefined || time(item) < before)
-    .sort((a, b) => time(b) - time(a))
+    .filter(after)
+    .sort((a, b) => time(b) - time(a) || ((b.id ?? "") < (a.id ?? "") ? -1 : 1))
     .slice(0, query.limit ?? 50);
 }
 
@@ -121,6 +129,23 @@ export class MemoryStore implements VectorStore {
     return page(items, query).map(clone);
   }
 
+  /** An earlier delivery to the same endpoint with the same ordering key is still pending. */
+  private blockedByEarlier(delivery: Delivery): boolean {
+    if (delivery.orderingKey === null) return false;
+    for (const other of this.deliveries.values()) {
+      if (
+        other.status === "pending" &&
+        other.endpointId === delivery.endpointId &&
+        other.orderingKey === delivery.orderingKey &&
+        (other.createdAt < delivery.createdAt ||
+          (other.createdAt.getTime() === delivery.createdAt.getTime() && other.id < delivery.id))
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   async claimDueDeliveries(now: Date, limit: number, lockedUntil: Date): Promise<Delivery[]> {
     const due = [...this.deliveries.values()]
       .filter(
@@ -128,12 +153,31 @@ export class MemoryStore implements VectorStore {
           d.status === "pending" &&
           d.nextAttemptAt !== null &&
           d.nextAttemptAt <= now &&
-          (d.lockedUntil === null || d.lockedUntil <= now),
+          (d.lockedUntil === null || d.lockedUntil <= now) &&
+          !this.blockedByEarlier(d),
       )
       .sort((a, b) => (a.nextAttemptAt?.getTime() ?? 0) - (b.nextAttemptAt?.getTime() ?? 0))
       .slice(0, limit);
     for (const delivery of due) delivery.lockedUntil = lockedUntil;
     return due.map(clone);
+  }
+
+  async deleteMessagesBefore(before: Date, limit: number): Promise<number> {
+    const pending = new Set<string>();
+    for (const d of this.deliveries.values()) if (d.status === "pending") pending.add(d.messageId);
+    const old = [...this.messages.values()]
+      .filter((m) => m.createdAt < before && !pending.has(m.id))
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || (a.id < b.id ? -1 : 1))
+      .slice(0, limit);
+    const ids = new Set(old.map((m) => m.id));
+    for (const id of ids) this.messages.delete(id);
+    for (const [id, d] of this.deliveries) if (ids.has(d.messageId)) this.deliveries.delete(id);
+    this.attempts = this.attempts.filter((a) => !ids.has(a.messageId));
+    return ids.size;
+  }
+
+  async schemaVersion(): Promise<number> {
+    return SCHEMA_VERSION;
   }
 
   async insertAttempt(attempt: Attempt): Promise<void> {

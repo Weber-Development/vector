@@ -21,12 +21,12 @@ A failed attempt is retried by the retry schedule (eight attempts over about 27 
 
 1. Read the changelog of the versions you skip. From 1.0.0 only major versions contain breaking changes. See [Stability and versioning](../reference/stability.md).
 2. Update the package, then run `await store.migrate()` (or the SQL from the schema function in your own migration tool). It only adds what is missing and is safe on every deploy.
-3. Deploy workers and senders in any order. The schema only grows within a major version, so old and new code can share one database during a rolling deploy.
+3. Deploy workers and senders in any order. The schema only grows within a major version, so old and new code can share one database during a rolling deploy. `store.schemaVersion()` returns the version recorded in the database (the `SCHEMA_VERSION` export is the version the code expects). Moving from 1.x to 2.0 is covered in [Migrating to 2.0](../migrating-to-2.md).
 4. Update the Pro packages together; they share one version number and must be at the same version as each other.
 
 ## Retention and backups
 
-Every attempt is a row, and a busy system produces many. Delete old messages on a schedule (see [PostgreSQL](postgres.md) and [SQLite and MySQL](sqlite-mysql.md) for the statements), and prune the deduper table daily if you use it. Thirty days is a common choice; keep messages longer if your support team needs to replay them. Vector Pro's `vector-ops` has a retention helper that deletes in batches (PostgreSQL).
+Every attempt is a row, and a busy system produces many. Delete old messages on a schedule (see [PostgreSQL](postgres.md) and [SQLite and MySQL](sqlite-mysql.md) for the statements), and prune the deduper table daily if you use it. Thirty days is a common choice; keep messages longer if your support team needs to replay them. `vector.prune({ olderThan })` deletes old messages with their deliveries and attempts in batches (500 per batch, 20 batches per call by default) and works on every store; messages that still have a pending delivery are kept. Call it from a nightly job. Vector Pro's `vector-ops` has a retention helper too (PostgreSQL).
 
 Endpoints hold signing secrets, so back up the database like any other secret store and restrict who can read the `vector_endpoints` table. Restoring an old backup does not break receivers: secrets are the same, and messages sent after the backup are simply gone.
 

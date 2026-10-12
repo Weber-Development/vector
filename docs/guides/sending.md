@@ -49,6 +49,53 @@ The payload must be JSON. It becomes `data` in the body `{ type, timestamp, data
 
 **Only some endpoints.** `endpointIds` limits a send to those endpoints; they still have to match the tenant and the event type.
 
+## Payload filters
+
+An endpoint can limit itself to messages whose payload matches a condition, on top of its event types:
+
+```ts
+await vector.endpoints.create({
+  url: "https://example.com/webhooks",
+  tenant: "acme",
+  eventTypes: ["invoice.*"],
+  filter: {
+    and: [
+      { path: "amount", op: "gte", value: 1000 },
+      { path: "customer.country", op: "in", value: ["CH", "DE"] },
+    ],
+  },
+});
+```
+
+A condition is `{ path, op, value }`. `path` is dot-separated (`customer.country`). Operators: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `nin`, `exists` (`value: true | false`), `prefix` (strings) and `contains` (substring or array element). Combine with `and`, `or` and `not`; nesting is limited to 5 levels and 50 conditions. A missing field never matches, except for `ne`, `nin` and `exists: false`. Invalid filters are rejected when the endpoint is created or updated. Pass `filter: null` to `update` to remove one.
+
+## Ordered delivery
+
+Deliveries are not ordered by default: retries and parallel workers mean a later message can arrive first. When order matters, give related messages the same `orderingKey`, for example an order id:
+
+```ts
+await vector.send({ eventType: "order.created", payload, orderingKey: order.id });
+await vector.send({ eventType: "order.paid", payload, orderingKey: order.id });
+```
+
+For one endpoint and one key, Vector delivers the next message only after the earlier ones have succeeded, failed for good or been cancelled. A message that keeps failing therefore delays later messages with the same key (until its retries run out), but not other keys. `orderingKey` is 1 to 256 characters and cannot be combined with `deliverNow`. Order is by the time of `send`; messages of one key sent in the same millisecond keep their call order.
+
+## Replaying history
+
+`replay` sends stored messages of a time range again, oldest first, as new deliveries, for example after an endpoint was down for a day or a new endpoint needs history. It respects event types and filters, and needs an explicit tenant (`null` for none) so a range never crosses tenants:
+
+```ts
+const { messages, deliveries, truncated } = await vector.replay({
+  tenant: "acme",
+  from: new Date("2026-10-01T00:00:00Z"),
+  endpointId: endpoint.id, // optional
+  eventTypes: ["invoice.*"], // optional, exact types
+  limit: 1000, // default 1000, at most 10000
+});
+```
+
+`truncated` is `true` when more messages matched than `limit`; call again with a later `from`. Replayed deliveries keep the original `webhook-id` (the message id), so a receiver that ignores repeated ids will skip them. Receivers that deduplicate must let replays through, for example by clearing the ids of the range first.
+
 ## Sending many events
 
 After an import or a nightly job, use `sendMany` instead of a loop:

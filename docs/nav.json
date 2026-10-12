@@ -2,7 +2,7 @@
   "sections": [
     {
       "label": "Start",
-      "items": ["introduction", "getting-started"]
+      "items": ["introduction", "getting-started", "migrating-to-2"]
     },
     {
       "label": "Guides",

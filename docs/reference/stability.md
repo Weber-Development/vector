@@ -33,7 +33,7 @@ A feature is deprecated in a minor version first: it keeps working, is marked `@
 
 ## Supported platforms
 
-Node.js 20.16 and newer, plus Bun and Deno where the dependencies allow. The package has no runtime dependencies. When a Node.js version reaches end of life, support for it ends in the next major version.
+Node.js 22 and newer, plus Bun and Deno where the dependencies allow. The package has no runtime dependencies. When a Node.js version reaches end of life, support for it ends in the next major version.
 
 ## Vector Pro
 

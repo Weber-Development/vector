@@ -9,6 +9,7 @@ import type {
   MessageQuery,
   VectorStore,
 } from "./types";
+import { SCHEMA_VERSION } from "./types";
 
 // Shared base of the SQLite and MySQL stores. Both use `?` placeholders and plain column types:
 // dates are milliseconds since the epoch, booleans 0/1 and JSON a text column, so the same SQL
@@ -31,6 +32,7 @@ const ENDPOINT_COLUMNS: Record<keyof Endpoint, Column> = {
   previousSecret: { name: "previous_secret" },
   previousSecretExpiresAt: { name: "previous_secret_expires_at", kind: "date" },
   eventTypes: { name: "event_types", kind: "json" },
+  filter: { name: "filter", kind: "json" },
   headers: { name: "headers", kind: "json" },
   metadata: { name: "metadata", kind: "json" },
   enabled: { name: "enabled", kind: "bool" },
@@ -46,6 +48,7 @@ const MESSAGE_COLUMNS: Record<keyof Message, Column> = {
   eventType: { name: "event_type" },
   payload: { name: "payload", kind: "json" },
   idempotencyKey: { name: "idempotency_key" },
+  orderingKey: { name: "ordering_key" },
   createdAt: { name: "created_at", kind: "date" },
 };
 
@@ -55,6 +58,7 @@ const DELIVERY_COLUMNS: Record<keyof Delivery, Column> = {
   endpointId: { name: "endpoint_id" },
   tenant: { name: "tenant" },
   eventType: { name: "event_type" },
+  orderingKey: { name: "ordering_key" },
   status: { name: "status" },
   attempts: { name: "attempts" },
   nextAttemptAt: { name: "next_attempt_at", kind: "date" },
@@ -148,13 +152,28 @@ function limit(value: number | undefined): string {
 }
 
 export interface SqlDialect {
-  /** Statements that create the tables and indexes, each safe to run again. */
+  /**
+   * Statements that create the tables (in their current shape) and the indexes that exist since
+   * the first version, each safe to run again.
+   */
   schema(prefix: string): string[];
   /**
-   * Marks up to `limit` due deliveries with `lockToken` and `lockedUntil` in one statement, so
-   * two workers never mark the same row. Parameters: lockedUntil, lockToken, now, now.
+   * Brings tables created by an older version up to the current shape and creates the newer
+   * indexes. Every step checks first, so it is safe to run again and on fresh tables.
    */
-  claim(table: string, limit: number): string;
+  upgrade(prefix: string, db: SqlExecutor): Promise<void>;
+  /**
+   * Marks up to `limit` due deliveries with `lockToken` and `lockedUntil` in one statement, so
+   * two workers never mark the same row. A delivery with an ordering key is skipped while an
+   * earlier pending one with the same endpoint and key exists.
+   */
+  claim(
+    table: string,
+    limit: number,
+    lockedUntil: number,
+    lockToken: string,
+    now: number,
+  ): { sql: string; params: unknown[] };
 }
 
 /** The common implementation behind `SqliteStore` and `MysqlStore`. */
@@ -164,6 +183,7 @@ export class SqlStore implements VectorStore {
     messages: string;
     deliveries: string;
     attempts: string;
+    schema: string;
   };
 
   constructor(
@@ -177,14 +197,51 @@ export class SqlStore implements VectorStore {
       messages: `${prefix}messages`,
       deliveries: `${prefix}deliveries`,
       attempts: `${prefix}attempts`,
+      schema: `${prefix}schema`,
     };
   }
 
-  /** Creates the tables and indexes if they do not exist. */
+  /**
+   * Creates the tables and indexes, or upgrades tables of an older Vector version, and records
+   * the schema version. Safe to run on every deploy.
+   */
   async migrate(): Promise<void> {
     for (const statement of this.dialect.schema(this.prefix)) {
       await this.db.run(statement, []);
     }
+    const version = await this.schemaVersion();
+    if (version < SCHEMA_VERSION) {
+      await this.dialect.upgrade(this.prefix, this.db);
+      await this.db.run(`delete from ${this.t.schema}`, []);
+      await this.db.run(`insert into ${this.t.schema} (version) values (?)`, [SCHEMA_VERSION]);
+    }
+  }
+
+  async schemaVersion(): Promise<number> {
+    try {
+      const [row] = await this.db.all(`select max(version) as version from ${this.t.schema}`, []);
+      return Number(row?.version ?? 0);
+    } catch {
+      return 0;
+    }
+  }
+
+  async deleteMessagesBefore(before: Date, max: number): Promise<number> {
+    const count = Math.min(Math.max(Math.trunc(max), 1), 1000);
+    const rows = await this.db.all(
+      `select id from ${this.t.messages} m
+       where created_at < ?
+         and not exists (select 1 from ${this.t.deliveries} d where d.message_id = m.id and d.status = 'pending')
+       order by created_at, id limit ${count}`,
+      [before.getTime()],
+    );
+    if (rows.length === 0) return 0;
+    const ids = rows.map((row) => String(row.id));
+    const marks = ids.map(() => "?").join(", ");
+    await this.db.run(`delete from ${this.t.attempts} where message_id in (${marks})`, ids);
+    await this.db.run(`delete from ${this.t.deliveries} where message_id in (${marks})`, ids);
+    await this.db.run(`delete from ${this.t.messages} where id in (${marks})`, ids);
+    return ids.length;
   }
 
   private async insert<T extends object>(
@@ -295,7 +352,10 @@ export class SqlStore implements VectorStore {
     where.tenant("tenant", query.tenant);
     if (query.eventType) where.add("event_type = ?", query.eventType);
     if (query.since) where.add("created_at >= ?", query.since);
-    if (query.before) where.add("created_at < ?", query.before);
+    if (query.before && query.beforeId) {
+      where.clauses.push("(created_at < ? or (created_at = ? and id < ?))");
+      where.params.push(param(query.before), param(query.before), query.beforeId);
+    } else if (query.before) where.add("created_at < ?", query.before);
     return this.list<Message>(
       this.t.messages,
       MESSAGE_COLUMNS,
@@ -339,12 +399,14 @@ export class SqlStore implements VectorStore {
   async claimDueDeliveries(now: Date, max: number, lockedUntil: Date) {
     const count = Math.min(Math.max(Math.trunc(max), 1), 1000);
     const token = globalThis.crypto.randomUUID();
-    const changed = await this.db.run(this.dialect.claim(this.t.deliveries, count), [
+    const claim = this.dialect.claim(
+      this.t.deliveries,
+      count,
       lockedUntil.getTime(),
       token,
       now.getTime(),
-      now.getTime(),
-    ]);
+    );
+    const changed = await this.db.run(claim.sql, claim.params);
     if (changed === 0) return [];
     const rows = await this.db.all(
       `select * from ${this.t.deliveries} where lock_token = ? order by next_attempt_at`,

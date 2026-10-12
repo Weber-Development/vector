@@ -34,10 +34,10 @@ Returns a `Vector`. Options, all optional:
 
 | Method | Returns |
 |---|---|
-| `create(input)` | `Endpoint`. Input: `url`, `tenant?`, `description?`, `eventTypes?`, `headers?`, `metadata?`, `secret?`, `signing?`, `enabled?` |
+| `create(input)` | `Endpoint`. Input: `url`, `tenant?`, `description?`, `eventTypes?`, `headers?`, `metadata?`, `filter?`, `secret?`, `signing?`, `enabled?` |
 | `get(id, scope?)` | `Endpoint \| undefined` |
 | `list(query?)` | `Endpoint[]`. Query: `tenant?`, `limit?`, `before?` |
-| `update(id, input, scope?)` | `Endpoint \| undefined`. Input: `url?`, `description?`, `eventTypes?`, `headers?`, `metadata?`, `enabled?` |
+| `update(id, input, scope?)` | `Endpoint \| undefined`. Input: `url?`, `description?`, `eventTypes?`, `headers?`, `metadata?`, `filter?`, `enabled?` |
 | `delete(id, scope?)` | `boolean` |
 | `rotateSecret(id, { tenant?, secret?, graceSeconds? })` | `Endpoint \| undefined`; keeps the endpoint's scheme |
 | `publicKey(id, scope?)` | `{ publicKey, previousPublicKey }` for Ed25519 endpoints, `null` for HMAC ones, `undefined` if missing |
@@ -48,13 +48,15 @@ Returns a `Vector`. Options, all optional:
 
 | Method | Returns |
 |---|---|
-| `send({ eventType, payload, tenant?, idempotencyKey?, endpointIds?, deliverNow? })` | `{ message, deliveries, duplicate }` |
+| `send({ eventType, payload, tenant?, idempotencyKey?, orderingKey?, endpointIds?, deliverNow? })` | `{ message, deliveries, duplicate }` |
 | `sendMany(inputs, { concurrency? })` | `SendResult[]`: up to 1000 events, validated first, in the order of the inputs |
 | `sendTest(endpointId, { tenant?, payload? })` | `Delivery \| undefined` after one attempt |
 | `process({ limit?, concurrency? })` | `{ claimed, succeeded, retrying, failed, cancelled }` |
 | `start({ intervalMs?, limit?, concurrency? })` | `{ stop(): Promise<void> }` |
 | `retry(deliveryId, scope?)` | `Delivery \| undefined` |
 | `resend(messageId, { tenant?, endpointId? })` | `Delivery[]` |
+| `replay({ tenant, from, to?, endpointId?, eventTypes?, limit? })` | `{ messages, deliveries, truncated }`: sends stored messages of a range again, oldest first |
+| `prune({ olderThan, batchSize?, maxBatches? })` | `number` of deleted messages (with deliveries and attempts) |
 | `messages.get(id, scope?)`, `messages.list({ tenant?, eventType?, since?, before?, limit? })` | |
 | `deliveries.get(id, scope?)`, `deliveries.list({ tenant?, messageId?, endpointId?, status?, since?, before?, limit? })` | |
 | `attempts.list({ tenant?, deliveryId?, messageId?, endpointId?, since?, before?, limit? })` | |
@@ -62,11 +64,12 @@ Returns a `Vector`. Options, all optional:
 
 ### Types
 
-- `Endpoint`: `id`, `tenant`, `url`, `description`, `secret`, `previousSecret`, `previousSecretExpiresAt`, `eventTypes`, `headers`, `metadata`, `enabled`, `disabledReason`, `failureStreak`, `createdAt`, `updatedAt`
-- `Message`: `id`, `tenant`, `eventType`, `payload`, `idempotencyKey`, `createdAt`
-- `Delivery`: `id`, `messageId`, `endpointId`, `tenant`, `eventType`, `status` (`pending`, `succeeded`, `failed`, `cancelled`), `attempts`, `nextAttemptAt`, `lockedUntil`, `lastAttemptAt`, `lastStatusCode`, `lastError`, `createdAt`, `updatedAt`
+- `Endpoint`: `id`, `tenant`, `url`, `description`, `secret`, `previousSecret`, `previousSecretExpiresAt`, `eventTypes`, `filter`, `headers`, `metadata`, `enabled`, `disabledReason`, `failureStreak`, `createdAt`, `updatedAt`
+- `Message`: `id`, `tenant`, `eventType`, `payload`, `idempotencyKey`, `orderingKey`, `createdAt`
+- `Delivery`: `id`, `messageId`, `endpointId`, `tenant`, `eventType`, `orderingKey`, `status` (`pending`, `succeeded`, `failed`, `cancelled`), `attempts`, `nextAttemptAt`, `lockedUntil`, `lastAttemptAt`, `lastStatusCode`, `lastError`, `createdAt`, `updatedAt`
 - `Attempt`: `id`, `deliveryId`, `messageId`, `endpointId`, `tenant`, `at`, `durationMs`, `statusCode`, `success`, `error`, `responseBody`
-- `VectorStore`: the storage interface; `MemoryStore` implements it
+- `PayloadFilter`, `FilterCondition`: the endpoint filter; `validateFilter` and `matchesFilter` are exported
+- `VectorStore`: the storage interface; `MemoryStore` implements it. Since 2.0 it also has `deleteMessagesBefore` and `schemaVersion`; `SCHEMA_VERSION` is the schema version the package expects
 
 ## Signing and verifying
 

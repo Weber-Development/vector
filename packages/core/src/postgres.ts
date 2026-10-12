@@ -10,6 +10,7 @@ import type {
   MessageQuery,
   VectorStore,
 } from "./types";
+import { SCHEMA_VERSION } from "./types";
 
 /**
  * Runs one parameterised statement. Fits `pg` (`pool.query`) directly; for other drivers wrap
@@ -37,6 +38,7 @@ const ENDPOINT_COLUMNS: Record<keyof Endpoint, Column> = {
   previousSecret: { name: "previous_secret" },
   previousSecretExpiresAt: { name: "previous_secret_expires_at" },
   eventTypes: { name: "event_types", json: true },
+  filter: { name: "filter", json: true },
   headers: { name: "headers", json: true },
   metadata: { name: "metadata", json: true },
   enabled: { name: "enabled" },
@@ -52,6 +54,7 @@ const MESSAGE_COLUMNS: Record<keyof Message, Column> = {
   eventType: { name: "event_type" },
   payload: { name: "payload", json: true },
   idempotencyKey: { name: "idempotency_key" },
+  orderingKey: { name: "ordering_key" },
   createdAt: { name: "created_at" },
 };
 
@@ -61,6 +64,7 @@ const DELIVERY_COLUMNS: Record<keyof Delivery, Column> = {
   endpointId: { name: "endpoint_id" },
   tenant: { name: "tenant" },
   eventType: { name: "event_type" },
+  orderingKey: { name: "ordering_key" },
   status: { name: "status" },
   attempts: { name: "attempts" },
   nextAttemptAt: { name: "next_attempt_at" },
@@ -109,6 +113,7 @@ create table if not exists ${p}endpoints (
   previous_secret text,
   previous_secret_expires_at timestamptz,
   event_types jsonb,
+  filter jsonb,
   headers jsonb not null default '{}',
   metadata jsonb not null default '{}',
   enabled boolean not null default true,
@@ -125,6 +130,7 @@ create table if not exists ${p}messages (
   event_type text not null,
   payload jsonb not null,
   idempotency_key text,
+  ordering_key text,
   created_at timestamptz not null
 );
 create unique index if not exists ${p}messages_idempotency_idx
@@ -137,6 +143,7 @@ create table if not exists ${p}deliveries (
   endpoint_id text not null,
   tenant text,
   event_type text not null,
+  ordering_key text,
   status text not null,
   attempts integer not null default 0,
   next_attempt_at timestamptz,
@@ -169,6 +176,17 @@ create index if not exists ${p}attempts_delivery_idx on ${p}attempts (delivery_i
 create index if not exists ${p}attempts_endpoint_idx on ${p}attempts (endpoint_id, at desc);
 create index if not exists ${p}attempts_message_idx on ${p}attempts (message_id);
 create index if not exists ${p}attempts_tenant_idx on ${p}attempts (tenant, at desc);
+
+-- Added after 1.x. These statements do nothing on tables that already have the columns.
+alter table ${p}endpoints add column if not exists filter jsonb;
+alter table ${p}messages add column if not exists ordering_key text;
+alter table ${p}deliveries add column if not exists ordering_key text;
+create index if not exists ${p}deliveries_order_idx on ${p}deliveries (endpoint_id, ordering_key, created_at)
+  where status = 'pending' and ordering_key is not null;
+
+create table if not exists ${p}schema (version integer not null);
+delete from ${p}schema where version < ${SCHEMA_VERSION};
+insert into ${p}schema (version) select ${SCHEMA_VERSION} where not exists (select 1 from ${p}schema);
 `;
 }
 
@@ -249,11 +267,40 @@ export class PostgresStore implements VectorStore {
     };
   }
 
-  /** Creates the tables and indexes if they do not exist. */
+  /**
+   * Creates the tables and indexes, or upgrades tables of an older Vector version, and records
+   * the schema version. Safe to run on every deploy.
+   */
   async migrate(): Promise<void> {
     for (const statement of postgresSchema(this.prefix).split(";")) {
-      if (statement.trim()) await this.query(statement, []);
+      if (statement.replace(/--.*$/gm, "").trim()) await this.query(statement, []);
     }
+  }
+
+  async schemaVersion(): Promise<number> {
+    try {
+      const result = await this.query(
+        `select max(version) as version from ${this.prefix}schema`,
+        [],
+      );
+      return Number(result.rows[0]?.version ?? 0);
+    } catch {
+      return 0;
+    }
+  }
+
+  async deleteMessagesBefore(before: Date, limit: number): Promise<number> {
+    const result = await this.query(
+      `delete from ${this.t.messages} where id in (
+         select m.id from ${this.t.messages} m
+         where m.created_at < $1
+           and not exists (select 1 from ${this.t.deliveries} d where d.message_id = m.id and d.status = 'pending')
+         order by m.created_at, m.id
+         limit $2
+       ) returning id`,
+      [before, Math.min(Math.max(Math.trunc(limit), 1), 1000)],
+    );
+    return result.rows.length;
   }
 
   private async insert<T extends object>(
@@ -353,7 +400,12 @@ export class PostgresStore implements VectorStore {
     where.tenant("tenant", query.tenant);
     if (query.eventType) where.add((p) => `event_type = ${p}`, query.eventType);
     if (query.since) where.add((p) => `created_at >= ${p}`, query.since);
-    if (query.before) where.add((p) => `created_at < ${p}`, query.before);
+    if (query.before && query.beforeId) {
+      where.params.push(query.before, query.beforeId);
+      const at = `$${where.params.length - 1}`;
+      const id = `$${where.params.length}`;
+      where.clauses.push(`(created_at < ${at} or (created_at = ${at} and id < ${id}))`);
+    } else if (query.before) where.add((p) => `created_at < ${p}`, query.before);
     const sql = `select * from ${this.t.messages} ${where.sql()} order by created_at desc, id desc ${where.limit(query.limit)}`;
     const result = await this.query(sql, where.params);
     return result.rows.map((row) => fromRow<Message>(MESSAGE_COLUMNS, row));
@@ -390,12 +442,17 @@ export class PostgresStore implements VectorStore {
     const result = await this.query(
       `update ${this.t.deliveries} set locked_until = $3
        where id in (
-         select id from ${this.t.deliveries}
-         where status = 'pending' and next_attempt_at <= $1
-           and (locked_until is null or locked_until <= $1)
-         order by next_attempt_at
+         select d.id from ${this.t.deliveries} d
+         where d.status = 'pending' and d.next_attempt_at <= $1
+           and (d.locked_until is null or d.locked_until <= $1)
+           and (d.ordering_key is null or not exists (
+             select 1 from ${this.t.deliveries} e
+             where e.endpoint_id = d.endpoint_id and e.ordering_key = d.ordering_key
+               and e.status = 'pending'
+               and (e.created_at < d.created_at or (e.created_at = d.created_at and e.id < d.id))))
+         order by d.next_attempt_at
          limit $2
-         for update skip locked
+         for update of d skip locked
        )
        returning *`,
       [now, limit, lockedUntil],

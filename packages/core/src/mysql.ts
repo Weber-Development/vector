@@ -1,5 +1,6 @@
 import { type DedupeDriver, type SqlDeduper, type SqlDeduperOptions, sqlDeduper } from "./dedupe";
 import { checkPrefix, type SqlDialect, SqlStore } from "./sql";
+import { SCHEMA_VERSION } from "./types";
 
 /**
  * Runs one parameterised statement with `?` placeholders. Returns the rows of a select and the
@@ -36,7 +37,9 @@ export function mysql2Query(pool: Mysql2Queryable): MysqlQuery {
 
 /** The SQL that creates the tables. Run it once, e.g. in a migration, or call `store.migrate()`. */
 export function mysqlSchema(tablePrefix = "vector_"): string {
-  return `${statements(checkPrefix(tablePrefix)).join(";\n")};\n`;
+  const p = checkPrefix(tablePrefix);
+  const version = `delete from ${p}schema;\ninsert into ${p}schema (version) values (${SCHEMA_VERSION})`;
+  return `${[...statements(p), orderIndex(p).sql, version].join(";\n")};\n`;
 }
 
 // Dates are milliseconds since the epoch (bigint), so no time zone setting of the server or the
@@ -53,6 +56,7 @@ function statements(p: string): string[] {
   previous_secret varchar(255) null,
   previous_secret_expires_at bigint null,
   event_types text null,
+  filter text null,
   headers text not null,
   metadata text not null,
   enabled tinyint(1) not null default 1,
@@ -69,6 +73,7 @@ function statements(p: string): string[] {
   event_type varchar(255) not null,
   payload longtext not null,
   idempotency_key varchar(255) null,
+  ordering_key varchar(255) null,
   created_at bigint not null,
   unique index ${p}messages_idempotency_idx (tenant_key, idempotency_key),
   index ${p}messages_tenant_idx (tenant, created_at)
@@ -79,6 +84,7 @@ function statements(p: string): string[] {
   endpoint_id varchar(64) not null,
   tenant varchar(255) null,
   event_type varchar(255) not null,
+  ordering_key varchar(255) null,
   status varchar(16) not null,
   attempts int not null default 0,
   next_attempt_at bigint null,
@@ -112,18 +118,69 @@ function statements(p: string): string[] {
   index ${p}attempts_message_idx (message_id),
   index ${p}attempts_tenant_idx (tenant, at)
 ) character set utf8mb4 collate utf8mb4_bin`,
+    `create table if not exists ${p}schema (version int not null) character set utf8mb4 collate utf8mb4_bin`,
   ];
+}
+
+/** Columns that came after 1.x: table, column. */
+const ADDED_COLUMNS = [
+  ["endpoints", "filter", "text null"],
+  ["messages", "ordering_key", "varchar(255) null"],
+  ["deliveries", "ordering_key", "varchar(255) null"],
+] as const;
+
+/** Index on a column that older versions did not have; MySQL has no CREATE INDEX IF NOT EXISTS. */
+function orderIndex(p: string) {
+  return {
+    name: `${p}deliveries_order_idx`,
+    sql: `create index ${p}deliveries_order_idx on ${p}deliveries (endpoint_id, ordering_key, created_at)`,
+  };
 }
 
 const dialect: SqlDialect = {
   schema: statements,
-  // One UPDATE with ORDER BY and LIMIT: InnoDB locks the rows it changes, so a second worker
-  // running the same statement waits and then skips them because they are locked until later.
-  claim: (table, limit) => `update ${table} set locked_until = ?, lock_token = ?
-    where status = 'pending' and next_attempt_at <= ?
-      and (locked_until is null or locked_until <= ?)
-    order by next_attempt_at
-    limit ${limit}`,
+  async upgrade(p, db) {
+    for (const [table, column, definition] of ADDED_COLUMNS) {
+      const found = await db.all(
+        `select column_name as name from information_schema.columns
+         where table_schema = database() and table_name = ? and column_name = ?`,
+        [`${p}${table}`, column],
+      );
+      if (found.length === 0) {
+        await db.run(`alter table ${p}${table} add column ${column} ${definition}`, []);
+      }
+    }
+    const index = orderIndex(p);
+    const found = await db.all(
+      `select index_name as name from information_schema.statistics
+       where table_schema = database() and table_name = ? and index_name = ? limit 1`,
+      [`${p}deliveries`, index.name],
+    );
+    if (found.length === 0) await db.run(index.sql, []);
+  },
+  // One UPDATE: InnoDB locks the rows it changes, so a second worker running the same statement
+  // waits, and then skips them because the outer conditions are checked again on the locked row.
+  // The derived table is needed because MySQL cannot select from the table it updates otherwise.
+  claim: (table, limit, lockedUntil, lockToken, now) => ({
+    sql: `update ${table} set locked_until = ?, lock_token = ?
+    where id in (
+      select id from (
+        select d.id from ${table} d
+        where d.status = 'pending' and d.next_attempt_at <= ?
+          and (d.locked_until is null or d.locked_until <= ?)
+          and (d.ordering_key is null or not exists (
+            select 1 from ${table} e
+            where e.endpoint_id = d.endpoint_id and e.ordering_key = d.ordering_key
+              and e.status = 'pending'
+              and (e.created_at < d.created_at or (e.created_at = d.created_at and e.id < d.id))))
+        order by d.next_attempt_at
+        limit ${limit}
+      ) picked
+    )
+    and status = 'pending' and next_attempt_at <= ?
+    and (locked_until is null or locked_until <= ?)`,
+    params: [lockedUntil, lockToken, now, now, now, now],
+  }),
 };
 
 /** A `VectorStore` on MySQL 8. Safe with several workers. */
