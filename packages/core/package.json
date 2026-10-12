@@ -96,7 +96,7 @@
     "mysql"
   ],
   "engines": {
-    "node": ">=20.16"
+    "node": ">=22"
   },
   "publishConfig": {
     "access": "public",

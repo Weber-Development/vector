@@ -1,6 +1,7 @@
 import { assertKey, generateKeyPair, isPublicKey, isSecretKey, publicKeyFor } from "./asymmetric";
 import { createId } from "./encoding";
 import { assertEventType, assertEventTypeFilter, endpointWants } from "./event-types";
+import { matchesFilter, validateFilter } from "./filter";
 import { MemoryStore } from "./memory-store";
 import { generateSecret, secretToBytes, signHeaders } from "./signature";
 import type {
@@ -12,6 +13,7 @@ import type {
   EndpointQuery,
   Message,
   MessageQuery,
+  PayloadFilter,
   VectorStore,
 } from "./types";
 import { assertDeliverableUrl, type UrlPolicy } from "./url-guard";
@@ -128,6 +130,8 @@ export interface CreateEndpointInput {
   tenant?: string | null;
   description?: string | null;
   eventTypes?: string[] | null;
+  /** Only messages whose payload matches reach this endpoint, e.g. `{ path: "amount", op: "gte", value: 100 }`. */
+  filter?: PayloadFilter | null;
   headers?: Record<string, string>;
   metadata?: Record<string, string>;
   /**
@@ -153,6 +157,7 @@ export interface UpdateEndpointInput {
   url?: string;
   description?: string | null;
   eventTypes?: string[] | null;
+  filter?: PayloadFilter | null;
   headers?: Record<string, string>;
   metadata?: Record<string, string>;
   enabled?: boolean;
@@ -165,6 +170,13 @@ export interface SendInput {
   tenant?: string | null;
   /** Sending twice with the same key (per tenant) creates only one message. */
   idempotencyKey?: string;
+  /**
+   * Messages with the same ordering key (per tenant) reach each endpoint one after the other, in
+   * the order they were sent: the next one waits until the one before has succeeded, given up or
+   * been cancelled. Use the id of the thing the events are about, e.g. an order or a customer.
+   * Cannot be combined with `deliverNow`.
+   */
+  orderingKey?: string;
   /** Only deliver to these endpoints (they must still match tenant and event type). */
   endpointIds?: string[];
   /** Make the first attempt right away and wait for it, instead of leaving it to the worker. */
@@ -413,6 +425,7 @@ export class Vector {
         previousSecret: null,
         previousSecretExpiresAt: null,
         eventTypes: validateEventTypes(input.eventTypes),
+        filter: input.filter ? validateFilter(input.filter) : null,
         headers: validateHeaders(input.headers),
         metadata: { ...(input.metadata ?? {}) },
         enabled: input.enabled ?? true,
@@ -445,6 +458,9 @@ export class Vector {
       }
       if (input.description !== undefined) patch.description = input.description;
       if (input.eventTypes !== undefined) patch.eventTypes = validateEventTypes(input.eventTypes);
+      if (input.filter !== undefined) {
+        patch.filter = input.filter ? validateFilter(input.filter) : null;
+      }
       if (input.headers !== undefined) patch.headers = validateHeaders(input.headers);
       if (input.metadata !== undefined) patch.metadata = { ...input.metadata };
       if (input.enabled !== undefined) {
@@ -537,6 +553,7 @@ export class Vector {
     const cache = new Map<string | null, Promise<Endpoint[]>>();
     const results: SendResult[] = new Array(inputs.length);
     // Repeats of an idempotency key inside the batch wait until the first one is stored.
+    // Messages with an ordering key are stored one after the other, in the order given.
     const seen = new Set<string>();
     const first: number[] = [];
     const repeats: number[] = [];
@@ -544,7 +561,7 @@ export class Vector {
       const key = input.idempotencyKey
         ? JSON.stringify([input.tenant ?? null, input.idempotencyKey])
         : null;
-      if (key && seen.has(key)) repeats.push(i);
+      if ((key && seen.has(key)) || input.orderingKey !== undefined) repeats.push(i);
       else {
         if (key) seen.add(key);
         first.push(i);
@@ -581,6 +598,16 @@ export class Vector {
     assertEventType(input.eventType);
     const tenant = input.tenant ?? null;
     const json = this.checkPayload(input.payload);
+    if (input.orderingKey !== undefined) {
+      if (
+        typeof input.orderingKey !== "string" ||
+        input.orderingKey === "" ||
+        input.orderingKey.length > 256
+      ) {
+        throw new TypeError("orderingKey must be a string of 1 to 256 characters.");
+      }
+      if (input.deliverNow) throw new TypeError("orderingKey cannot be combined with deliverNow.");
+    }
     if (input.idempotencyKey) {
       const existing = await this.store.findMessageByIdempotencyKey(tenant, input.idempotencyKey);
       if (existing) {
@@ -595,7 +622,9 @@ export class Vector {
       eventType: input.eventType,
       payload: JSON.parse(json),
       idempotencyKey: input.idempotencyKey ?? null,
-      createdAt: now,
+      orderingKey: input.orderingKey ?? null,
+      // Strictly increasing for ordered messages, so two sent in one millisecond keep their order.
+      createdAt: input.orderingKey === undefined ? now : this.orderedTime(now),
     };
     const only = input.endpointIds ? new Set(input.endpointIds) : undefined;
     let lookup = cache?.get(tenant);
@@ -607,6 +636,7 @@ export class Vector {
       (endpoint) =>
         endpoint.enabled &&
         endpointWants(endpoint.eventTypes, message.eventType) &&
+        matchesFilter(endpoint.filter, message.payload) &&
         (!only || only.has(endpoint.id)),
     );
     // With deliverNow the deliveries are stored locked, so no worker picks them up meanwhile.
@@ -634,13 +664,22 @@ export class Vector {
     return { message, deliveries, duplicate: false };
   }
 
+  private lastOrdered = 0;
+
+  private orderedTime(now: Date): Date {
+    this.lastOrdered = Math.max(now.getTime(), this.lastOrdered + 1);
+    return new Date(this.lastOrdered);
+  }
+
   private newDelivery(message: Message, endpointId: string, now: Date): Delivery {
+    const ordered = message.orderingKey !== null;
     return {
-      id: createId("del", now.getTime()),
+      id: createId("del", ordered ? message.createdAt.getTime() : now.getTime()),
       messageId: message.id,
       endpointId,
       tenant: message.tenant,
       eventType: message.eventType,
+      orderingKey: message.orderingKey,
       status: "pending",
       attempts: 0,
       nextAttemptAt: now,
@@ -648,7 +687,7 @@ export class Vector {
       lastAttemptAt: null,
       lastStatusCode: null,
       lastError: null,
-      createdAt: now,
+      createdAt: ordered ? message.createdAt : now,
       updatedAt: now,
     };
   }
@@ -678,6 +717,7 @@ export class Vector {
       eventType: "webhook.test",
       payload: options.payload ?? { message: "This is a test event from Vector." },
       idempotencyKey: null,
+      orderingKey: null,
       createdAt: now,
     };
     const delivery = this.lockLocal(this.newDelivery(message, endpoint.id, now));
@@ -1042,6 +1082,82 @@ export class Vector {
     return out;
   }
 
+  /**
+   * Sends the stored messages of a time range to the endpoints again, oldest first, as new
+   * deliveries. Useful after an endpoint was down for a long time or a new endpoint needs history.
+   * `tenant` is required (use `null` for messages without a tenant) so a range never crosses tenants.
+   * Endpoints are matched by event types and payload filter, as for a normal send.
+   */
+  async replay(options: ReplayOptions): Promise<ReplayResult> {
+    if (options.tenant === undefined) throw new TypeError("replay needs a tenant (or null).");
+    if (!(options.from instanceof Date) || Number.isNaN(options.from.getTime())) {
+      throw new TypeError("replay needs a valid `from` date.");
+    }
+    const to = options.to ?? this.now();
+    const limit = Math.min(Math.max(Math.trunc(options.limit ?? 1000), 1), MAX_REPLAY);
+    const endpoints = (await this.store.endpointsForTenant(options.tenant)).filter(
+      (endpoint) => endpoint.enabled && (!options.endpointId || endpoint.id === options.endpointId),
+    );
+    const wanted = options.eventTypes ? new Set(options.eventTypes) : undefined;
+    // Newest first from the store, so collect up to the limit and then process oldest first.
+    const collected: Message[] = [];
+    let before: Date | undefined = new Date(to.getTime() + 1);
+    let beforeId: string | undefined;
+    let truncated = false;
+    while (before) {
+      const page: Message[] = await this.store.listMessages({
+        tenant: options.tenant,
+        since: options.from,
+        before,
+        ...(beforeId ? { beforeId } : {}),
+        limit: 200,
+      });
+      for (const message of page) {
+        if (message.createdAt > to || (wanted && !wanted.has(message.eventType))) continue;
+        if (collected.length >= limit) {
+          truncated = true;
+          break;
+        }
+        collected.push(message);
+      }
+      const last = page.at(-1);
+      if (truncated || page.length < 200 || !last) break;
+      before = last.createdAt;
+      beforeId = last.id;
+    }
+    collected.reverse();
+    const deliveries: Delivery[] = [];
+    const now = this.now();
+    for (const message of collected) {
+      const targets = endpoints.filter(
+        (endpoint) =>
+          endpointWants(endpoint.eventTypes, message.eventType) &&
+          matchesFilter(endpoint.filter, message.payload),
+      );
+      if (targets.length === 0) continue;
+      const created = targets.map((endpoint) => this.newDelivery(message, endpoint.id, now));
+      await this.store.insertDeliveries(created);
+      deliveries.push(...created);
+    }
+    return { messages: collected.length, deliveries, truncated };
+  }
+
+  /**
+   * Deletes messages (with their deliveries and attempts) older than `olderThan`, in batches.
+   * Returns how many messages were deleted. Run it from a schedule to keep the tables small.
+   */
+  async prune(options: PruneOptions): Promise<number> {
+    const batchSize = Math.min(Math.max(Math.trunc(options.batchSize ?? 500), 1), 5000);
+    const maxBatches = Math.max(Math.trunc(options.maxBatches ?? 20), 1);
+    let total = 0;
+    for (let i = 0; i < maxBatches; i++) {
+      const deleted = await this.store.deleteMessagesBefore(options.olderThan, batchSize);
+      total += deleted;
+      if (deleted < batchSize) break;
+    }
+    return total;
+  }
+
   // ---------------------------------------------------------------- reading
 
   readonly messages = {
@@ -1063,6 +1179,39 @@ export class Vector {
   readonly attempts = {
     list: (query: AttemptQuery = {}): Promise<Attempt[]> => this.store.listAttempts(query),
   };
+}
+
+const MAX_REPLAY = 10_000;
+
+export interface ReplayOptions {
+  /** Required: the tenant to replay, or `null` for messages without a tenant. */
+  tenant: string | null;
+  from: Date;
+  /** Default: now. */
+  to?: Date;
+  /** Only this endpoint. Default: every enabled endpoint of the tenant that wants the message. */
+  endpointId?: string;
+  /** Only messages of these event types. */
+  eventTypes?: string[];
+  /** Most messages to replay. Default 1000, at most 10000. */
+  limit?: number;
+}
+
+export interface ReplayResult {
+  /** Messages that were looked at (within the limit). */
+  messages: number;
+  /** The new deliveries. */
+  deliveries: Delivery[];
+  /** True when more messages matched than `limit` allowed; the oldest ones were not replayed. */
+  truncated: boolean;
+}
+
+export interface PruneOptions {
+  olderThan: Date;
+  /** Messages per delete. Default 500. */
+  batchSize?: number;
+  /** Most batches per call. Default 20. */
+  maxBatches?: number;
 }
 
 /** Creates a webhook sender. See `VectorOptions`. */

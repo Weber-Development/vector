@@ -15,6 +15,7 @@ export {
   type SqlDeduper,
 } from "./dedupe";
 export { endpointWants, matchesEventType } from "./event-types";
+export { matchesFilter, validateFilter } from "./filter";
 export { MemoryStore } from "./memory-store";
 export {
   generateSecret,
@@ -43,11 +44,14 @@ export type {
   DeliveryStatus,
   Endpoint,
   EndpointQuery,
+  FilterCondition,
   Message,
   MessageQuery,
   Page,
+  PayloadFilter,
   VectorStore,
 } from "./types";
+export { SCHEMA_VERSION } from "./types";
 export {
   assertDeliverableUrl,
   isPrivateAddress,
@@ -61,6 +65,9 @@ export {
   type EndpointPublicKeys,
   type ProcessOptions,
   type ProcessResult,
+  type PruneOptions,
+  type ReplayOptions,
+  type ReplayResult,
   type SendInput,
   type SendResult,
   type SigningScheme,

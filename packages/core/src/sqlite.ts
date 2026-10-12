@@ -1,5 +1,6 @@
 import { type DedupeDriver, type SqlDeduper, type SqlDeduperOptions, sqlDeduper } from "./dedupe";
 import { checkPrefix, type SqlDialect, type SqlExecutor, SqlStore } from "./sql";
+import { SCHEMA_VERSION } from "./types";
 
 /**
  * A synchronous SQLite database. Fits `DatabaseSync` from `node:sqlite` (Node 22.5+) and
@@ -20,7 +21,9 @@ export interface SqliteStoreOptions {
 
 /** The SQL that creates the tables. Run it once, e.g. in a migration, or call `store.migrate()`. */
 export function sqliteSchema(tablePrefix = "vector_"): string {
-  return `${statements(checkPrefix(tablePrefix)).join(";\n")};\n`;
+  const p = checkPrefix(tablePrefix);
+  const version = `delete from ${p}schema;\ninsert into ${p}schema (version) values (${SCHEMA_VERSION})`;
+  return `${[...statements(p), ...indexesV2(p), version].join(";\n")};\n`;
 }
 
 function statements(p: string): string[] {
@@ -34,6 +37,7 @@ function statements(p: string): string[] {
   previous_secret text,
   previous_secret_expires_at integer,
   event_types text,
+  filter text,
   headers text not null default '{}',
   metadata text not null default '{}',
   enabled integer not null default 1,
@@ -49,6 +53,7 @@ function statements(p: string): string[] {
   event_type text not null,
   payload text not null,
   idempotency_key text,
+  ordering_key text,
   created_at integer not null
 )`,
     `create unique index if not exists ${p}messages_idempotency_idx
@@ -60,6 +65,7 @@ function statements(p: string): string[] {
   endpoint_id text not null,
   tenant text,
   event_type text not null,
+  ordering_key text,
   status text not null,
   attempts integer not null default 0,
   next_attempt_at integer,
@@ -93,21 +99,54 @@ function statements(p: string): string[] {
     `create index if not exists ${p}attempts_endpoint_idx on ${p}attempts (endpoint_id, at desc)`,
     `create index if not exists ${p}attempts_message_idx on ${p}attempts (message_id)`,
     `create index if not exists ${p}attempts_tenant_idx on ${p}attempts (tenant, at desc)`,
+    `create table if not exists ${p}schema (version integer not null)`,
   ];
 }
 
+/** Indexes on columns that older versions did not have, so they come after the column upgrade. */
+function indexesV2(p: string): string[] {
+  return [
+    `create index if not exists ${p}deliveries_order_idx on ${p}deliveries (endpoint_id, ordering_key, created_at)
+  where status = 'pending' and ordering_key is not null`,
+  ];
+}
+
+/** Columns that came after 1.x: table, column. */
+const ADDED_COLUMNS = [
+  ["endpoints", "filter"],
+  ["messages", "ordering_key"],
+  ["deliveries", "ordering_key"],
+] as const;
+
 const dialect: SqlDialect = {
   schema: statements,
+  async upgrade(p, db) {
+    for (const [table, column] of ADDED_COLUMNS) {
+      const columns = await db.all(`pragma table_info(${p}${table})`, []);
+      if (!columns.some((row) => row.name === column)) {
+        await db.run(`alter table ${p}${table} add column ${column} text`, []);
+      }
+    }
+    for (const statement of indexesV2(p)) await db.run(statement, []);
+  },
   // SQLite only allows ORDER BY and LIMIT on UPDATE with a compile option, hence the subquery.
   // The statement runs as one write transaction, so two processes never claim the same row.
-  claim: (table, limit) => `update ${table} set locked_until = ?, lock_token = ?
+  claim: (table, limit, lockedUntil, lockToken, now) => ({
+    sql: `update ${table} set locked_until = ?, lock_token = ?
     where id in (
-      select id from ${table}
-      where status = 'pending' and next_attempt_at <= ?
-        and (locked_until is null or locked_until <= ?)
-      order by next_attempt_at
+      select d.id from ${table} d
+      where d.status = 'pending' and d.next_attempt_at <= ?
+        and (d.locked_until is null or d.locked_until <= ?)
+        and (d.ordering_key is null or not exists (
+          select 1 from ${table} e
+          where e.endpoint_id = d.endpoint_id and e.ordering_key = d.ordering_key
+            and e.status = 'pending'
+            and (e.created_at < d.created_at or (e.created_at = d.created_at and e.id < d.id))))
+      order by d.next_attempt_at
       limit ${limit}
     )`,
+    params: [lockedUntil, lockToken, now, now],
+  }),
 };
 
 function executor(database: SqliteDatabase): SqlExecutor {

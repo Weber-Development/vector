@@ -51,4 +51,4 @@ Receivers in other languages can use any Ed25519 library: decode the part after 
 
 ## Requirements
 
-Ed25519 uses the Web Crypto API, available in Node.js 20.16+ (the minimum for Vector), Deno, Bun, Cloudflare Workers and current browsers.
+Ed25519 uses the Web Crypto API, available in Node.js 22+ (the minimum for Vector), Deno, Bun, Cloudflare Workers and current browsers.
