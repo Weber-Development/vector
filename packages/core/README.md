@@ -72,3 +72,14 @@ npx @sweberdev/vector send https://example.com/webhooks --secret whsec_...
 ## Licence
 
 MIT
+
+<!-- pro-promo -->
+## Vector Pro
+
+Need more than the free package? **Vector Pro** adds:
+
+- Customer portal: embeddable endpoints, secrets, message log and retries for your tenants
+- Event catalog, inbound webhooks (Stripe, GitHub, Shopify and more), transforms for Slack, Teams, Discord
+- Ops and OpenTelemetry: alerts, bulk recovery, Prometheus metrics, spans per delivery
+
+Subscriptions from CHF 29 per month, or a one-time lifetime licence. [See what is included](https://packages.sweber.dev/vector?utm_source=npm&utm_medium=readme&utm_campaign=pro)
