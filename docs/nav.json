@@ -27,6 +27,7 @@
         "pro/portal",
         "pro/catalog",
         "pro/ops",
+        "pro/server",
         "pro/inbound",
         "pro/transform",
         "pro/otel"

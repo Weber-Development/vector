@@ -85,6 +85,43 @@ await writeFile("vector.dashboard.json", grafanaDashboard({ objective: 0.995 }))
 
 `sloStatus` counts attempts, not deliveries: a retry that succeeds still used one failed attempt. A burn rate of 1 uses exactly the error budget over the window, 2 uses it twice as fast. `prometheusRules` writes alert rules for a fast burn (14.4 times over one hour and five minutes) and a slow burn (6 times over six hours and 30 minutes), a growing backlog (`backlogThreshold`, default 1000) and a disabled endpoint, for the counters of `createMetricsCollector` and the gauges of `prometheusMetrics`; list the file under `rule_files`. `grafanaDashboard` writes a dashboard with the success ratio against the objective, attempts by outcome, p95 duration, backlog and endpoint tables; import it in Grafana. The files are parsed and checked in tests, but **not yet run through `promtool` or imported into Grafana**. Mutual TLS or a fixed egress IP is a matter of your proxy: pass an undici dispatcher to Vector's `dispatcher` option, see [Security](../guides/security.md).
 
+## Regions and tenant limits
+
+`createDeliveryControls` gives groups of endpoints their own way out to the internet and keeps one tenant from using all of a worker's capacity. It returns the `fetch`, `hold` and `transform` options for `createVector`.
+
+```ts
+import { ProxyAgent, fetch as undiciFetch } from "undici";
+import { createDeliveryControls } from "@weber-development/vector-ops";
+
+const dispatcher = new ProxyAgent("http://proxy-eu.internal:3128");
+const controls = createDeliveryControls({
+  fetch: undiciFetch as typeof fetch,
+  regions: { eu: { dispatcher }, us: { fetch: sendThroughUsRelay } },
+  defaultRegion: "eu",
+  tenantRegions: { globex: "us" },
+  limits: {
+    default: { perSecond: 20, maxConcurrent: 10 },
+    tenants: { acme: { perSecond: 100, perDay: 500_000 } },
+  },
+});
+
+const vector = createVector({ store, ...controls.options });
+// Already using a transform (for example from vector-transform)?
+// createVector({ store, ...controls.withTransform(myTransform) })
+```
+
+**Regions.** An endpoint picks a region with `metadata.region`; if it has none, its tenant's entry in `tenantRegions` applies, then `defaultRegion`. A region sends its requests through its own `dispatcher` (an undici `ProxyAgent`, so the receiver sees the proxy's fixed IP) or its own `fetch`. An endpoint with an unknown region fails its attempt with `Unknown region "…"`, so a typo is visible in the log. `controls.regionOf(endpoint)` tells which region an endpoint uses. A region is an outgoing route: your data stays where your store is.
+
+**Limits.** Per tenant (`default` for tenants without an entry):
+
+- `perSecond` caps the requests of all endpoints of the tenant per second (a burst of `ceil(perSecond)`). Over the limit, deliveries wait and are not counted as attempts.
+- `maxConcurrent` caps the requests in flight; further requests wait for a free slot while their timeout runs.
+- `perDay` caps the requests per UTC day; deliveries wait until the next day.
+
+Per endpoint, `metadata.rateLimit` (a Vector option already), `metadata.maxConcurrent` and `metadata.dailyLimit` work the same way, as strings. A daily limit counts the deliveries that passed the check, so a delivery that another limit defers right afterwards may use up a slot. Pass `hold: breaker.hold` to combine the limits with a circuit breaker; the longer wait wins. `controls.usage()` returns today's counts per tenant, requests in flight and requests per region, for a dashboard or metrics.
+
+Counters live in the memory of the process. With several worker processes, each one applies the limits on its own.
+
 ## Circuit breaker
 
 An endpoint that is down should not eat the retry schedule of every message you send it. The circuit breaker holds deliveries while an endpoint keeps failing and probes it now and then:
